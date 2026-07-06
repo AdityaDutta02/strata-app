@@ -114,7 +114,7 @@ async function decrementProjectSpent(job: JobRow, token: string, amount: number)
   if (!job.project_id || amount <= 0) return
   try {
     const project = await dbGet<ProjectRow>('projects', job.project_id, token)
-    await dbUpdate<ProjectRow>('projects', project.id, { credits_spent: Math.max(0, project.credits_spent - amount) }, token)
+    await dbUpdate<ProjectRow>('projects', project.id, { credits_spent: Math.max(0, (project.credits_spent ?? 0) - amount) }, token)
   } catch (err: unknown) {
     logger.warn({ msg: 'credits_spent decrement failed', projectId: job.project_id, err: String(err) })
   }

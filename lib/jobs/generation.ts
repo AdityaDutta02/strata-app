@@ -37,7 +37,7 @@ export async function createGeneration(project: ProjectRow, viewer: Viewer, body
   await dbUpdate<ProjectRow>(
     'projects',
     project.id,
-    { credits_spent: project.credits_spent + voiceCredits + videoCredits },
+    { credits_spent: (project.credits_spent ?? 0) + voiceCredits + videoCredits },
     token,
   )
 

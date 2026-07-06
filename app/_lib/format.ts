@@ -1,5 +1,6 @@
-export function formatCredits(n: number): string {
-  return n.toLocaleString("en-US");
+export function formatCredits(n: number | null | undefined): string {
+  // Defensive: rows fetched mid-migration or from partial API payloads may miss numeric fields.
+  return (n ?? 0).toLocaleString("en-US");
 }
 
 export function formatDuration(sec: number): string {
