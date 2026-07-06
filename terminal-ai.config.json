@@ -1,0 +1,12 @@
+{
+  "app_name": "Strata",
+  "framework": "nextjs",
+  "gateway_version": "2",
+  "health_check_path": "/api/health",
+  "port": 3000,
+  "requires_file_upload": true,
+  "generates_artifacts": true,
+  "model_tier": "standard",
+  "category": "chat",
+  "tier": "good"
+}
