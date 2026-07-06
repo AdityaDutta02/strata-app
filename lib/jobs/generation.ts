@@ -34,6 +34,12 @@ export async function createGeneration(project: ProjectRow, viewer: Viewer, body
   const videoCredits = minutes * RATES.video_gen
 
   await reserveCredits(workspace, voiceCredits + videoCredits, token, { note: `generation for project ${project.id}` })
+  await dbUpdate<ProjectRow>(
+    'projects',
+    project.id,
+    { credits_spent: project.credits_spent + voiceCredits + videoCredits },
+    token,
+  )
 
   const voiceJobType: JobType = project.voice_mode === 'swap' ? 'voice_swap' : 'voice_gen'
   const voiceJob = await dbInsert<JobRow>(

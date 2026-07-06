@@ -1,7 +1,7 @@
 // lib/jobs/shared.ts — helpers shared by the generation chain and the onboarding chain:
 // asset storage, credit refund-on-failure (with project-wide cascade), and delayed-task
 // watchdog scheduling (capped at 5 re-schedules per job per BUILD-SPEC-MVP).
-import { dbInsert, dbList, dbUpdate } from '../db'
+import { dbGet, dbInsert, dbList, dbUpdate } from '../db'
 import { getPresignedUploadUrl, storageUpload } from '../storage'
 import { createDelayedTask } from '../task-sdk'
 import { logger } from '../logger'
@@ -85,6 +85,7 @@ export async function failJob(
     const workspace = await getWorkspace(job.viewer_id, token)
     if (workspace) {
       await refundCredits(workspace, job.credits_reserved, token, { jobId: job.id, note: `refund: ${message}` })
+      await decrementProjectSpent(job, token, job.credits_reserved)
     }
   }
   await dbUpdate<JobRow>('jobs', job.id, { status: 'failed', error: message }, token)
@@ -98,6 +99,7 @@ export async function failJob(
         const workspace = await getWorkspace(sibling.viewer_id, token)
         if (workspace) {
           await refundCredits(workspace, sibling.credits_reserved, token, { jobId: sibling.id, note: 'cascaded cancellation' })
+          await decrementProjectSpent(sibling, token, sibling.credits_reserved)
         }
       }
       await dbUpdate<JobRow>('jobs', sibling.id, { status: 'cancelled' }, token)
@@ -105,6 +107,17 @@ export async function failJob(
     await dbUpdate<ProjectRow>('projects', job.project_id, { status: 'failed' }, token)
   }
   logger.info({ msg: 'job failure handled', jobId: job.id })
+}
+
+/** Keeps projects.credits_spent in sync when a reservation is refunded. */
+async function decrementProjectSpent(job: JobRow, token: string, amount: number): Promise<void> {
+  if (!job.project_id || amount <= 0) return
+  try {
+    const project = await dbGet<ProjectRow>('projects', job.project_id, token)
+    await dbUpdate<ProjectRow>('projects', project.id, { credits_spent: Math.max(0, project.credits_spent - amount) }, token)
+  } catch (err: unknown) {
+    logger.warn({ msg: 'credits_spent decrement failed', projectId: job.project_id, err: String(err) })
+  }
 }
 
 export async function scheduleWatchdog(job: JobRow, token: string): Promise<void> {
