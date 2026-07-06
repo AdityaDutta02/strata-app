@@ -1,0 +1,24 @@
+[
+  {
+    "t0": 0.0,
+    "t1": 2.5,
+    "line": "Meet the platform your team has been waiting for.",
+    "cueType": "lower-third",
+    "direction": "Show product logo lower-third as the line starts.",
+    "source": {
+      "url": "https://example.com/articles/product-launch-trends",
+      "title": "Why product-led launches are winning in 2026"
+    }
+  },
+  {
+    "t0": 2.5,
+    "t1": 5.1,
+    "line": "One workspace, every workflow.",
+    "cueType": "chart",
+    "direction": "Cut to a simple workflow diagram.",
+    "source": {
+      "url": "https://example.com/articles/unified-workspace-tools",
+      "title": "The rise of the unified workspace"
+    }
+  }
+]

@@ -1,0 +1,117 @@
+@import url('https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Surfaces — near-white editorial canvas */
+  --color-surface-page: #FBFBFA;
+  --color-surface-card: #FFFFFF;
+  --color-surface-subtle: #F4F4F2;
+  --color-surface-muted: #EAEAE7;
+  --color-surface-disabled: rgba(10, 10, 11, 0.04);
+  --color-surface-inverse: #0A0A0B;
+
+  /* Text — near-black, refined greys */
+  --color-text-primary: #0A0A0B;
+  --color-text-default: #1C1C1E;
+  --color-text-secondary: #71716F;
+  --color-text-disabled: rgba(10, 10, 11, 0.32);
+  --color-text-link: #2E4BEB;
+  --color-text-inverse: #FFFFFF;
+
+  /* Borders — hairlines carry the structure */
+  --color-border-subtle: rgba(10, 10, 11, 0.09);
+  --color-border-default: #C9C9C4;
+  --color-border-muted: #E5E5E1;
+  --color-border-focus: #2E4BEB;
+  --color-border-focus-ring: rgba(46, 75, 235, 0.28);
+
+  /* Interactive — BLACK is the primary action */
+  --color-interactive-primary: #0A0A0B;
+  --color-interactive-primary-hover: #2A2A2C;
+  --color-interactive-primary-pressed: #000000;
+  --color-interactive-primary-foreground: #FFFFFF;
+  --color-interactive-primary-subtle: rgba(10, 10, 11, 0.05);
+  --color-interactive-secondary: #FFFFFF;
+  --color-interactive-secondary-hover: #F4F4F2;
+  --color-interactive-secondary-pressed: #EAEAE7;
+
+  /* Accent — the one saturated pop, reserved for "the money" (generate/render) + links */
+  --color-accent: #2E4BEB;
+  --color-accent-hover: #2038D6;
+  --color-accent-pressed: #1A2FB8;
+  --color-accent-foreground: #FFFFFF;
+  --color-accent-subtle: rgba(46, 75, 235, 0.08);
+
+  /* Feedback — muted, editorial */
+  --color-feedback-success: #1F7A4D;
+  --color-feedback-success-bg: rgba(31, 122, 77, 0.09);
+  --color-feedback-warning: #B96A12;
+  --color-feedback-warning-bg: rgba(185, 106, 18, 0.1);
+  --color-feedback-error: #D0342C;
+  --color-feedback-error-bg: rgba(208, 52, 44, 0.08);
+  --color-feedback-info: #2E4BEB;
+  --color-feedback-info-bg: rgba(46, 75, 235, 0.08);
+
+  /* Radius — sharp */
+  --radius-none: 0px;
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --radius-pill: 30px;
+  --radius-full: 100px;
+
+  /* Elevation — flat by default; borders do the work */
+  --shadow-e1: 0 1px 2px rgba(10, 10, 11, 0.04);
+  --shadow-e2: 0 2px 8px rgba(10, 10, 11, 0.06);
+  --shadow-e3: 0 12px 32px rgba(10, 10, 11, 0.12);
+  --shadow-e4: 0 20px 52px rgba(10, 10, 11, 0.16);
+  --shadow-control: 0 1px 2px rgba(0, 0, 0, 0.06);
+
+  /* Video poster placeholders (saturated duotone tiles — content color lives here) */
+  --poster-grad-0: linear-gradient(155deg, #2E4BEB, #1A2FB8);
+  --poster-grad-1: linear-gradient(155deg, #E8482E, #B32A17);
+  --poster-grad-2: linear-gradient(155deg, #C9A24B, #8A6A22);
+  --poster-grad-3: linear-gradient(155deg, #1F2A3A, #0C1119);
+}
+
+* {
+  border-color: var(--color-border-subtle);
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-surface-page);
+  color: var(--color-text-default);
+  font-family: 'Schibsted Grotesk', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes shimmer {
+  100% { transform: translateX(200%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* uppercase micro-label — the Palantir eyebrow */
+.eyebrow {
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}

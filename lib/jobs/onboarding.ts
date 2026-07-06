@@ -1,0 +1,131 @@
+// lib/jobs/onboarding.ts — the standalone (no project) chain: avatar_create + voice_clone,
+// triggered from POST /api/onboard. First avatar+voice per workspace is comped (0cr).
+import type { Viewer } from '../auth'
+import { dbGet, dbInsert, dbList, dbUpdate } from '../db'
+import { getPresignedDownloadUrl } from '../storage'
+import { RATES, bootstrapWorkspace, chargeComped, getWorkspace, reserveCredits } from '../credits'
+import * as heygen from '../providers/heygen'
+import * as fish from '../providers/fish'
+import * as kits from '../providers/kits'
+import { JobValidationError, failJob, markJobReady, scheduleWatchdog } from './shared'
+import type { AvatarRow, JobRow, VoiceRow, WorkspaceRow } from '../types'
+
+export interface OnboardBody {
+  name: string
+  avatarUploadKey: string
+  voiceUploadKey: string
+}
+
+export async function createOnboardingJobs(
+  viewer: Viewer,
+  body: OnboardBody,
+): Promise<{ avatar: AvatarRow; voice: VoiceRow; jobs: JobRow[] }> {
+  const { token, viewerId } = viewer
+  const workspace = await bootstrapWorkspace(viewerId, token)
+  const [existingAvatars, existingVoices] = await Promise.all([
+    dbList<AvatarRow>('avatars', { viewer_id: viewerId }, token),
+    dbList<VoiceRow>('voices', { viewer_id: viewerId }, token),
+  ])
+  const isComped = !workspace.first_avatar_comped && existingAvatars.length === 0 && existingVoices.length === 0
+
+  const avatarCredits = isComped ? 0 : RATES.avatar_create
+  const voiceCredits = isComped ? 0 : RATES.voice_clone
+  if (!isComped) {
+    await reserveCredits(workspace, avatarCredits + voiceCredits, token, { note: 'onboarding avatar+voice training' })
+  }
+
+  const avatar = await dbInsert<AvatarRow>(
+    'avatars',
+    { viewer_id: viewerId, name: body.name, status: 'training', training_video_key: body.avatarUploadKey },
+    token,
+  )
+  const voice = await dbInsert<VoiceRow>(
+    'voices',
+    { viewer_id: viewerId, name: body.name, status: 'training', sample_key: body.voiceUploadKey },
+    token,
+  )
+
+  const avatarJob = await dbInsert<JobRow>(
+    'jobs',
+    { viewer_id: viewerId, project_id: null, type: 'avatar_create', status: 'queued', input_json: { avatarId: avatar.id }, output_json: {}, credits_reserved: avatarCredits, credits_charged: 0 },
+    token,
+  )
+  const voiceJob = await dbInsert<JobRow>(
+    'jobs',
+    { viewer_id: viewerId, project_id: null, type: 'voice_clone', status: 'queued', input_json: { voiceId: voice.id }, output_json: {}, credits_reserved: voiceCredits, credits_charged: 0 },
+    token,
+  )
+
+  if (isComped) {
+    const freshWorkspace = await getWorkspace(viewerId, token)
+    if (freshWorkspace) {
+      await chargeComped(freshWorkspace, token, { jobId: avatarJob.id, note: 'first avatar+voice comped' })
+    }
+    await dbUpdate<WorkspaceRow>('workspaces', workspace.id, { first_avatar_comped: true }, token)
+  }
+
+  await runAvatarTraining(avatarJob, avatar, viewer)
+  await runVoiceCloneTraining(voiceJob, voice, viewer)
+
+  const jobs = [await dbGet<JobRow>('jobs', avatarJob.id, token), await dbGet<JobRow>('jobs', voiceJob.id, token)]
+  return { avatar, voice, jobs }
+}
+
+async function runAvatarTraining(job: JobRow, avatar: AvatarRow, viewer: Viewer): Promise<void> {
+  const { token, viewerId } = viewer
+  await dbUpdate<JobRow>('jobs', job.id, { status: 'processing' }, token)
+  try {
+    const key = avatar.training_video_key
+    if (!key) throw new JobValidationError('Missing training video upload')
+    const { url } = await getPresignedDownloadUrl(key, token)
+    const providerJobId = await heygen.createAvatar(url, viewerId, token)
+    await dbUpdate<AvatarRow>('avatars', avatar.id, { heygen_avatar_id: providerJobId }, token)
+    await dbUpdate<JobRow>('jobs', job.id, { status: 'processing', provider_job_id: providerJobId }, token)
+    await scheduleWatchdog({ ...job, provider_job_id: providerJobId }, token)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    await failJob(job, token, message)
+    await dbUpdate<AvatarRow>('avatars', avatar.id, { status: 'failed', error: message }, token)
+  }
+}
+
+export async function pollAvatarJob(job: JobRow, token: string): Promise<boolean> {
+  if (job.status !== 'processing' || !job.provider_job_id) return false
+  const avatarId = job.input_json.avatarId as string | undefined
+  const status = await heygen.avatarStatus(job.provider_job_id, job.viewer_id, token)
+  if (status.status === 'training') {
+    await scheduleWatchdog(job, token)
+    return false
+  }
+  if (status.status === 'failed') {
+    await failJob(job, token, status.error ?? 'HeyGen avatar training failed')
+    if (avatarId) await dbUpdate<AvatarRow>('avatars', avatarId, { status: 'failed', error: status.error ?? 'training failed' }, token)
+    return true
+  }
+  await markJobReady(job, {}, token)
+  if (avatarId) await dbUpdate<AvatarRow>('avatars', avatarId, { status: 'ready' }, token)
+  return true
+}
+
+async function runVoiceCloneTraining(job: JobRow, voice: VoiceRow, viewer: Viewer): Promise<void> {
+  const { token, viewerId } = viewer
+  await dbUpdate<JobRow>('jobs', job.id, { status: 'processing' }, token)
+  try {
+    const key = voice.sample_key
+    if (!key) throw new JobValidationError('Missing voice sample upload')
+    const { url } = await getPresignedDownloadUrl(key, token)
+    // One training upload powers both the Fish Audio TTS clone (used by "Generate from
+    // script") and the Kits.ai swap target (used by "Upload recording") — a single
+    // voice_clone job/charge covers both provider registrations.
+    const [fishVoiceId, kitsVoiceId] = await Promise.all([
+      fish.cloneVoice(url, voice.name, viewerId, token),
+      kits.createTargetVoice(url, voice.name, viewerId, token),
+    ])
+    await dbUpdate<VoiceRow>('voices', voice.id, { fish_voice_id: fishVoiceId, kits_voice_id: kitsVoiceId, status: 'ready' }, token)
+    await markJobReady({ ...job, status: 'processing' }, { fishVoiceId, kitsVoiceId }, token)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    await failJob(job, token, message)
+    await dbUpdate<VoiceRow>('voices', voice.id, { status: 'failed', error: message }, token)
+  }
+}

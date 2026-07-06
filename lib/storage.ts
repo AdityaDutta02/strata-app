@@ -7,7 +7,8 @@ export async function storageUpload(key: string, buffer: Buffer, contentType: st
   const res = await fetch(`${GATEWAY_URL}/storage/${key}`, {
     method: 'PUT',
     headers: { Authorization: `Bearer ${embedToken}`, 'Content-Type': contentType },
-    body: buffer,
+    // Node's Buffer isn't assignable to fetch BodyInit under strict DOM types
+    body: new Uint8Array(buffer),
   })
   if (!res.ok) throw new Error(`Storage upload failed: ${res.status}`)
   return res.json() as Promise<{ key: string }>

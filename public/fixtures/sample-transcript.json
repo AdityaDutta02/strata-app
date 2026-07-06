@@ -1,0 +1,14 @@
+{
+  "text": "Meet the platform your team has been waiting for.",
+  "words": [
+    { "word": "Meet", "start": 0.0, "end": 0.32 },
+    { "word": "the", "start": 0.32, "end": 0.45 },
+    { "word": "platform", "start": 0.45, "end": 0.95 },
+    { "word": "your", "start": 0.95, "end": 1.15 },
+    { "word": "team", "start": 1.15, "end": 1.45 },
+    { "word": "has", "start": 1.45, "end": 1.6 },
+    { "word": "been", "start": 1.6, "end": 1.8 },
+    { "word": "waiting", "start": 1.8, "end": 2.2 },
+    { "word": "for.", "start": 2.2, "end": 2.5 }
+  ]
+}
