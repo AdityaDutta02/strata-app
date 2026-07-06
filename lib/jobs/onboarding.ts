@@ -7,6 +7,7 @@ import { RATES, bootstrapWorkspace, chargeComped, getWorkspace, reserveCredits }
 import * as heygen from '../providers/heygen'
 import * as fish from '../providers/fish'
 import * as kits from '../providers/kits'
+import { logger } from '../logger'
 import { JobValidationError, failJob, markJobReady, scheduleWatchdog } from './shared'
 import type { AvatarRow, JobRow, VoiceRow, WorkspaceRow } from '../types'
 
@@ -114,13 +115,23 @@ async function runVoiceCloneTraining(job: JobRow, voice: VoiceRow, viewer: Viewe
     const key = voice.sample_key
     if (!key) throw new JobValidationError('Missing voice sample upload')
     const { url } = await getPresignedDownloadUrl(key, token)
-    // One training upload powers both the Fish Audio TTS clone (used by "Generate from
-    // script") and the Kits.ai swap target (used by "Upload recording") — a single
-    // voice_clone job/charge covers both provider registrations.
-    const [fishVoiceId, kitsVoiceId] = await Promise.all([
-      fish.cloneVoice(url, voice.name, viewerId, token),
-      kits.createTargetVoice(url, voice.name, viewerId, token),
-    ])
+    // The Fish Audio TTS clone (used by "Generate from script") is the required step.
+    // Kits.ai does NOT support programmatic voice training (web-app only) — its
+    // registration is best-effort: on failure the voice is still marked ready with
+    // kits_voice_id null, and the voice-swap path degrades cleanly (generation.ts
+    // rejects swap for voices without a Kits target). The owner can train the voice at
+    // app.kits.ai and backfill the numeric model id into voices.kits_voice_id.
+    const fishVoiceId = await fish.cloneVoice(url, voice.name, viewerId, token)
+    let kitsVoiceId: string | null = null
+    try {
+      kitsVoiceId = await kits.createTargetVoice(url, voice.name, viewerId, token)
+    } catch (kitsErr) {
+      logger.warn({
+        msg: 'kits target voice registration unavailable — TTS-only voice',
+        voiceId: voice.id,
+        err: kitsErr instanceof Error ? kitsErr.message : String(kitsErr),
+      })
+    }
     await dbUpdate<VoiceRow>('voices', voice.id, { fish_voice_id: fishVoiceId, kits_voice_id: kitsVoiceId, status: 'ready' }, token)
     await markJobReady({ ...job, status: 'processing' }, { fishVoiceId, kitsVoiceId }, token)
   } catch (err) {
