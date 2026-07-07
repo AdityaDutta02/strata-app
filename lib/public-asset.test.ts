@@ -14,8 +14,8 @@ describe('public-asset signed proxy URLs', () => {
   })
 
   it('round-trips the embedded upstream URL when the signature is valid', () => {
-    const url = new URL(publicAssetUrl(UPSTREAM, 60))
-    expect(url.origin + url.pathname).toBe('https://app.example.com/api/public-asset')
+    const url = new URL(publicAssetUrl(UPSTREAM, 60, 'training.mp4'))
+    expect(url.origin + url.pathname).toBe('https://app.example.com/api/public-asset/training.mp4')
     const upstream = verifyPublicAsset(
       url.searchParams.get('u') ?? '',
       Number(url.searchParams.get('exp')),

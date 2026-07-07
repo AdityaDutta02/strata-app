@@ -90,7 +90,7 @@ async function runAvatarTraining(job: JobRow, avatar: AvatarRow, viewer: Viewer)
     // reliably reachable externally, so hand HeyGen a signed URL on our own public origin
     // that streams the presigned upstream (minted now, while the viewer token is valid).
     const { url } = await getPresignedDownloadUrl(key, token)
-    const footageUrl = isMockMode(token) ? url : publicAssetUrl(url, 14 * 60)
+    const footageUrl = isMockMode(token) ? url : publicAssetUrl(url, 14 * 60, 'training.mp4')
     const created = await heygen.createAvatar(footageUrl, viewerId, token)
     await dbUpdate<AvatarRow>('avatars', avatar.id, { heygen_avatar_id: created.avatarId }, token)
     // Group id lives in the job's output_json — the live DB predates the avatars-table

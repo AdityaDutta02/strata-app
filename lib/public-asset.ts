@@ -22,12 +22,15 @@ function sign(encodedUpstream: string, expiresAtSec: number): string {
   return createHmac('sha256', secret()).update(`${encodedUpstream}\n${expiresAtSec}`).digest('hex')
 }
 
-/** Wraps an already-presigned storage URL in a signed URL on the app's public origin. */
-export function publicAssetUrl(presignedUpstreamUrl: string, ttlSeconds: number): string {
+/** Wraps an already-presigned storage URL in a signed URL on the app's public origin.
+ *  The path ends in a real media filename (e.g. .../training.mp4) because some providers
+ *  (HeyGen) validate the URL's file extension before downloading. */
+export function publicAssetUrl(presignedUpstreamUrl: string, ttlSeconds: number, filename = 'asset.mp4'): string {
   const exp = Math.floor(Date.now() / 1000) + ttlSeconds
   const u = Buffer.from(presignedUpstreamUrl, 'utf8').toString('base64url')
   const params = new URLSearchParams({ u, exp: String(exp), sig: sign(u, exp) })
-  return `${publicBaseUrl()}/api/public-asset?${params.toString()}`
+  const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, '_')
+  return `${publicBaseUrl()}/api/public-asset/${safeName}?${params.toString()}`
 }
 
 /** Verifies a proxy request and returns the embedded upstream URL, or null if invalid/expired. */
