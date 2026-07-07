@@ -9,6 +9,8 @@ import * as heygen from '../providers/heygen'
 import * as fish from '../providers/fish'
 import * as kits from '../providers/kits'
 import { logger } from '../logger'
+import { publicAssetUrl } from '../public-asset'
+import { isMockMode } from '../providers/mock'
 import { JobValidationError, failJob, markJobReady, scheduleWatchdog } from './shared'
 import type { AvatarRow, JobRow, VoiceRow, WorkspaceRow } from '../types'
 
@@ -73,14 +75,23 @@ export async function createOnboardingJobs(
   return { avatar, voice, jobs }
 }
 
+/** Re-runs HeyGen training for an existing avatar (used by the failed-avatar retry route). */
+export async function retryAvatarTraining(job: JobRow, avatar: AvatarRow, viewer: Viewer): Promise<void> {
+  return runAvatarTraining(job, avatar, viewer)
+}
+
 async function runAvatarTraining(job: JobRow, avatar: AvatarRow, viewer: Viewer): Promise<void> {
   const { token, viewerId } = viewer
   await dbUpdate<JobRow>('jobs', job.id, { status: 'processing' }, token)
   try {
     const key = avatar.training_video_key
     if (!key) throw new JobValidationError('Missing training video upload')
+    // HeyGen fetches the footage from ITS servers — the platform's presigned URLs are not
+    // reliably reachable externally, so hand HeyGen a signed URL on our own public origin
+    // that streams the presigned upstream (minted now, while the viewer token is valid).
     const { url } = await getPresignedDownloadUrl(key, token)
-    const created = await heygen.createAvatar(url, viewerId, token)
+    const footageUrl = isMockMode(token) ? url : publicAssetUrl(url, 14 * 60)
+    const created = await heygen.createAvatar(footageUrl, viewerId, token)
     await dbUpdate<AvatarRow>(
       'avatars',
       avatar.id,

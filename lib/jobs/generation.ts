@@ -13,6 +13,7 @@ import * as kits from '../providers/kits'
 import * as groq from '../providers/groq'
 import { findSources } from '../providers/research'
 import { isMockMode, mockAudioBuffer, mockVideoBuffer } from '../providers/mock'
+import { providerTimeout } from '../providers/provider-error'
 import { JobValidationError, downloadBytes, failJob, markJobReady, scheduleWatchdog, storeAsset } from './shared'
 import type { AssetRow, AvatarRow, JobRow, JobType, NotesLine, ProjectRow, VoiceRow } from '../types'
 
@@ -132,10 +133,21 @@ async function startVideoJob(project: ProjectRow, audioAsset: AssetRow, viewer: 
     return
   }
   try {
+    // HeyGen's workers can't reliably fetch the platform's presigned URLs, so the audio
+    // is pushed to HeyGen's own asset store (≤32MB — ample for TTS mp3) and referenced
+    // by its HeyGen-hosted URL.
     const { url: audioUrl } = await getPresignedDownloadUrl(audioAsset.storage_key, token)
+    let heygenAudioUrl = audioUrl
+    if (!isMockMode(token)) {
+      const audioRes = await fetch(audioUrl, { signal: providerTimeout() })
+      if (!audioRes.ok) throw new Error(`failed to read voiceover audio: ${audioRes.status}`)
+      const audioBuffer = Buffer.from(await audioRes.arrayBuffer())
+      const asset = await heygen.uploadAsset(audioBuffer, 'audio/mpeg', 'voiceover.mp3', viewerId, token)
+      heygenAudioUrl = asset.url
+    }
     const providerJobId = await heygen.createVideo(
       avatar?.heygen_avatar_id ?? 'mock',
-      audioUrl,
+      heygenAudioUrl,
       viewerId,
       token,
       project.resolution === '1080p' ? '1080p' : '720p',

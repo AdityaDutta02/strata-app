@@ -40,12 +40,30 @@ export async function POST(request: Request): Promise<NextResponse> {
       await storageUpload(key, buffer, contentType, viewer.token)
     } else {
       const presigned = await getPresignedUploadUrl(key, contentType, buffer.byteLength, viewer.token)
-      const putRes = await fetch(presigned.url, {
-        method: 'PUT',
-        headers: { 'Content-Type': contentType },
-        body: new Uint8Array(buffer),
-      })
-      if (!putRes.ok) throw new Error(`server-side presigned PUT failed: ${putRes.status}`)
+      // Large transfer: generous timeout + one retry — undici's default body timeout is too
+      // tight for multi-hundred-MB PUTs on slow links.
+      let lastErr: unknown
+      let uploaded = false
+      for (let attempt = 0; attempt < 2 && !uploaded; attempt++) {
+        try {
+          const putRes = await fetch(presigned.url, {
+            method: 'PUT',
+            headers: { 'Content-Type': contentType },
+            body: new Uint8Array(buffer),
+            signal: AbortSignal.timeout(15 * 60_000),
+          })
+          if (!putRes.ok) throw new Error(`server-side presigned PUT failed: ${putRes.status}`)
+          uploaded = true
+        } catch (putErr) {
+          lastErr = putErr
+          logger.warn({ msg: 'relay PUT attempt failed', attempt, key, err: String(putErr) })
+        }
+      }
+      if (!uploaded) {
+        throw new Error(
+          `storage upload failed after retries (${lastErr instanceof Error ? lastErr.message : String(lastErr)})`,
+        )
+      }
     }
     logger.info({ msg: 'upload relayed', viewerId: viewer.viewerId, kind, key, bytes: buffer.byteLength })
     return NextResponse.json({ key, originalFilename: filename })

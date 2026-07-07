@@ -103,6 +103,9 @@ export const api = {
   avatars: async (token: string): Promise<Avatar[]> =>
     (await request<{ avatars: Avatar[] }>(token, "/api/avatars")).avatars,
 
+  retryAvatar: async (token: string, id: string): Promise<Avatar> =>
+    (await request<{ avatar: Avatar }>(token, `/api/avatars/${id}/retry`, { method: "POST" })).avatar,
+
   onboard: (
     token: string,
     body: { name: string; avatarUploadKey: string; voiceUploadKey: string }

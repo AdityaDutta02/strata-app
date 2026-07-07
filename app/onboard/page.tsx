@@ -47,11 +47,49 @@ export default function OnboardPage() {
     };
   }, [token, submitted]);
 
+  /** HeyGen rejects footage outside 15s–10min — catch it before spending the upload. */
+  function videoDurationSeconds(file: File): Promise<number | null> {
+    return new Promise((resolve) => {
+      const url = URL.createObjectURL(file);
+      const probe = document.createElement("video");
+      probe.preload = "metadata";
+      probe.onloadedmetadata = () => {
+        URL.revokeObjectURL(url);
+        resolve(Number.isFinite(probe.duration) ? probe.duration : null);
+      };
+      probe.onerror = () => {
+        URL.revokeObjectURL(url);
+        resolve(null);
+      };
+      probe.src = url;
+    });
+  }
+
+  async function handleRetryAvatar(id: string): Promise<void> {
+    if (!token) return;
+    try {
+      setSubmitError(null);
+      await api.retryAvatar(token, id);
+      const fresh = await api.avatars(token);
+      setAvatars(fresh);
+    } catch (e) {
+      setSubmitError(e instanceof ApiError ? e.message : "Retry failed");
+    }
+  }
+
   async function handleSubmit(): Promise<void> {
     if (!token || !videoFile || !audioFile || name.trim() === "") return;
     try {
       setSubmitting(true);
       setSubmitError(null);
+      const duration = await videoDurationSeconds(videoFile);
+      if (duration !== null && (duration < 15 || duration > 600)) {
+        setSubmitError(
+          `Training video is ${Math.round(duration)}s — HeyGen requires between 15 seconds and 10 minutes of clear, front-facing footage.`,
+        );
+        setSubmitting(false);
+        return;
+      }
       const [avatarUploadKey, voiceUploadKey] = await Promise.all([
         uploadFile(token, "avatar_training", videoFile),
         uploadFile(token, "voice_training", audioFile),
@@ -145,10 +183,18 @@ export default function OnboardPage() {
 
             <div className="overflow-hidden rounded-sm border border-line-subtle bg-surface-card">
               {avatars.slice(0, 1).map((a) => (
-                <StatusRow key={a.id} icon={Video} label={a.name} status={a.status} />
+                <StatusRow
+                  key={a.id}
+                  icon={Video}
+                  label={a.name}
+                  status={a.status}
+                  error={a.error}
+                  consentUrl={a.consent_url}
+                  onRetry={a.status === "failed" ? () => void handleRetryAvatar(a.id) : undefined}
+                />
               ))}
               {voices.slice(0, 1).map((v) => (
-                <StatusRow key={v.id} icon={Mic} label={v.name} status={v.status} />
+                <StatusRow key={v.id} icon={Mic} label={v.name} status={v.status} error={v.error} />
               ))}
               {avatars.length === 0 && voices.length === 0 && (
                 <div className="flex items-center gap-3 px-4 py-3 text-sm text-fg-secondary">
@@ -171,18 +217,54 @@ function StatusRow({
   icon: Icon,
   label,
   status,
+  error,
+  consentUrl,
+  onRetry,
 }: {
   icon: typeof Video;
   label: string;
   status: "training" | "ready" | "failed";
+  error?: string | null;
+  consentUrl?: string | null;
+  onRetry?: () => void;
 }) {
   return (
-    <div className="flex items-center gap-3 border-b border-line-subtle px-4 py-3 last:border-0">
-      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-sm bg-surface-subtle text-fg-secondary">
-        <Icon size={14} strokeWidth={2} />
+    <div className="border-b border-line-subtle last:border-0">
+      <div className="flex items-center gap-3 px-4 py-3">
+        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-sm bg-surface-subtle text-fg-secondary">
+          <Icon size={14} strokeWidth={2} />
+        </div>
+        <span className="min-w-0 flex-1 truncate text-sm font-medium text-fg-primary">{label}</span>
+        <StatusPill status={jobStatusToAssetStatus(status === "training" ? "processing" : status === "ready" ? "ready" : "failed")} />
       </div>
-      <span className="min-w-0 flex-1 truncate text-sm font-medium text-fg-primary">{label}</span>
-      <StatusPill status={jobStatusToAssetStatus(status === "training" ? "processing" : status === "ready" ? "ready" : "failed")} />
+      {status === "training" && consentUrl && (
+        <div className="flex items-start gap-2 border-t border-line-subtle bg-surface-subtle px-4 py-2.5 text-sm text-fg-secondary">
+          <span className="min-w-0 flex-1">
+            One-time consent approval needed — the person in the footage must approve it.
+          </span>
+          <a
+            href={consentUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="shrink-0 font-medium text-accent underline underline-offset-2"
+          >
+            Open consent page
+          </a>
+        </div>
+      )}
+      {status === "failed" && (
+        <div className="flex items-start gap-2 border-t border-line-subtle bg-error/5 px-4 py-2.5 text-sm">
+          <span className="min-w-0 flex-1 break-words text-error">{error ?? "Training failed."}</span>
+          {onRetry && (
+            <button
+              onClick={onRetry}
+              className="shrink-0 rounded-sm border border-line-default px-2.5 py-1 text-xs font-medium text-fg-primary hover:bg-surface-subtle"
+            >
+              Retry training
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

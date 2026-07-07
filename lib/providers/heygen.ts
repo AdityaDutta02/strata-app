@@ -17,6 +17,51 @@ function apiKey(): string {
   return key
 }
 
+/** Reads an error response body (truncated) so failures carry HeyGen's diagnostic message. */
+async function errorDetail(res: Response): Promise<string> {
+  const body = await res.text().catch(() => '')
+  return body ? `: ${body.slice(0, 300)}` : ''
+}
+
+export interface HeygenAsset {
+  assetId: string
+  url: string
+}
+
+const ASSET_MAX_BYTES = 32 * 1024 * 1024
+
+/** Uploads bytes to HeyGen's own asset store (max 32MB — mp3/wav/mp4/webm/png/jpeg).
+ *  The returned URL is HeyGen-hosted, so their render workers can always fetch it. */
+export async function uploadAsset(
+  buffer: Buffer,
+  contentType: string,
+  filename: string,
+  viewerId: string,
+  token: string,
+): Promise<HeygenAsset> {
+  await logProviderCall(viewerId, 'heygen.uploadAsset', { bytes: buffer.byteLength, contentType }, token)
+  if (isMockMode(token)) {
+    return { assetId: `mock-asset-${buffer.byteLength}`, url: `mock://asset/${filename}` }
+  }
+  if (buffer.byteLength > ASSET_MAX_BYTES) {
+    throw new ProviderError('heygen', `asset too large for HeyGen upload (${buffer.byteLength} bytes, max 32MB)`)
+  }
+  const form = new FormData()
+  form.append('file', new Blob([new Uint8Array(buffer)], { type: contentType }), filename)
+  const res = await fetch(`${BASE}/assets`, {
+    method: 'POST',
+    headers: { 'x-api-key': apiKey() },
+    body: form,
+    signal: providerTimeout(),
+  })
+  if (!res.ok) throw new ProviderError('heygen', `uploadAsset failed: ${res.status}${await errorDetail(res)}`, res.status)
+  const body = (await res.json()) as { data?: { asset_id?: string; url?: string } }
+  const assetId = body.data?.asset_id
+  const url = body.data?.url
+  if (!assetId || !url) throw new ProviderError('heygen', 'uploadAsset: missing asset id/url in response')
+  return { assetId, url }
+}
+
 interface HeygenApiError {
   code?: string
   message?: string
@@ -68,7 +113,7 @@ export async function createAvatar(videoUrl: string, viewerId: string, token: st
     }),
     signal: providerTimeout(),
   })
-  if (!res.ok) throw new ProviderError('heygen', `createAvatar failed: ${res.status}`, res.status)
+  if (!res.ok) throw new ProviderError('heygen', `createAvatar failed: ${res.status}${await errorDetail(res)}`, res.status)
   const body = (await res.json()) as {
     data?: {
       avatar_item?: { id?: string; avatar_group_id?: string; group_id?: string }
@@ -101,7 +146,7 @@ export async function requestConsent(
     body: JSON.stringify(rerouteUrl ? { reroute_url: rerouteUrl } : {}),
     signal: providerTimeout(),
   })
-  if (!res.ok) throw new ProviderError('heygen', `requestConsent failed: ${res.status}`, res.status)
+  if (!res.ok) throw new ProviderError('heygen', `requestConsent failed: ${res.status}${await errorDetail(res)}`, res.status)
   const body = (await res.json()) as { data?: { url?: string }; url?: string }
   const url = body.data?.url ?? body.url
   if (!url) throw new ProviderError('heygen', 'requestConsent: missing consent url in response')
@@ -114,7 +159,7 @@ export async function avatarStatus(avatarId: string, viewerId: string, token: st
     headers: { 'x-api-key': apiKey() },
     signal: providerTimeout(),
   })
-  if (!res.ok) throw new ProviderError('heygen', `avatarStatus failed: ${res.status}`, res.status)
+  if (!res.ok) throw new ProviderError('heygen', `avatarStatus failed: ${res.status}${await errorDetail(res)}`, res.status)
   const body = (await res.json()) as { data?: { status?: string; error?: HeygenApiError | null } }
   const raw = body.data?.status
   const normalized = normalizeStatus(raw)
@@ -157,7 +202,7 @@ export async function createVideo(
     }),
     signal: providerTimeout(),
   })
-  if (!res.ok) throw new ProviderError('heygen', `createVideo failed: ${res.status}`, res.status)
+  if (!res.ok) throw new ProviderError('heygen', `createVideo failed: ${res.status}${await errorDetail(res)}`, res.status)
   const body = (await res.json()) as { data?: { video_id?: string } }
   const videoId = body.data?.video_id
   if (!videoId) throw new ProviderError('heygen', 'createVideo: missing video id in response')
@@ -172,7 +217,7 @@ export async function videoStatus(videoId: string, viewerId: string, token: stri
     headers: { 'x-api-key': apiKey() },
     signal: providerTimeout(),
   })
-  if (!res.ok) throw new ProviderError('heygen', `videoStatus failed: ${res.status}`, res.status)
+  if (!res.ok) throw new ProviderError('heygen', `videoStatus failed: ${res.status}${await errorDetail(res)}`, res.status)
   const body = (await res.json()) as {
     data?: { status?: string; video_url?: string; error?: HeygenApiError | null }
     error?: HeygenApiError | null
