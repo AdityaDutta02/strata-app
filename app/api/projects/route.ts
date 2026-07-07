@@ -43,6 +43,7 @@ export async function POST(request: Request): Promise<NextResponse> {
         voice_mode: body.voiceMode,
         stage: 'script',
         status: 'draft',
+        resolution: '720p',
         credits_spent: 0,
       },
       viewer.token,

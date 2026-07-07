@@ -24,7 +24,15 @@ interface HeygenApiError {
 
 export interface HeygenAvatarStatus {
   status: 'training' | 'ready' | 'failed'
+  /** True while HeyGen waits for the browser-based consent approval (raw status pending_consent). */
+  pendingConsent?: boolean
   error?: string
+}
+
+export interface HeygenCreatedAvatar {
+  avatarId: string
+  /** Avatar group id — needed for the consent endpoint. May be absent in mock mode. */
+  groupId?: string
 }
 
 export interface HeygenVideoStatus {
@@ -43,11 +51,12 @@ function normalizeStatus(raw: string | undefined): NormalizedStatus {
 }
 
 /** Kicks off digital-twin avatar creation from an uploaded training video. Returns HeyGen's
- *  avatar look id (poll with avatarStatus). */
-export async function createAvatar(videoUrl: string, viewerId: string, token: string): Promise<string> {
+ *  avatar look id (poll with avatarStatus) plus the avatar group id (for the consent flow). */
+export async function createAvatar(videoUrl: string, viewerId: string, token: string): Promise<HeygenCreatedAvatar> {
   await logProviderCall(viewerId, 'heygen.createAvatar', { videoUrl }, token)
   if (isMockMode(token)) {
-    return `mock-avatar-${Buffer.from(videoUrl).toString('hex').slice(0, 12)}`
+    const suffix = Buffer.from(videoUrl).toString('hex').slice(0, 12)
+    return { avatarId: `mock-avatar-${suffix}`, groupId: `mock-group-${suffix}` }
   }
   const res = await fetch(`${BASE}/avatars`, {
     method: 'POST',
@@ -60,10 +69,43 @@ export async function createAvatar(videoUrl: string, viewerId: string, token: st
     signal: providerTimeout(),
   })
   if (!res.ok) throw new ProviderError('heygen', `createAvatar failed: ${res.status}`, res.status)
-  const body = (await res.json()) as { data?: { avatar_item?: { id?: string } } }
+  const body = (await res.json()) as {
+    data?: {
+      avatar_item?: { id?: string; avatar_group_id?: string; group_id?: string }
+      avatar_group?: { id?: string }
+    }
+  }
   const avatarId = body.data?.avatar_item?.id
   if (!avatarId) throw new ProviderError('heygen', 'createAvatar: missing avatar id in response')
-  return avatarId
+  const groupId =
+    body.data?.avatar_item?.avatar_group_id ?? body.data?.avatar_item?.group_id ?? body.data?.avatar_group?.id
+  return { avatarId, groupId }
+}
+
+/** Requests the consent-approval URL for an avatar group stuck in pending_consent. The person
+ *  in the training footage opens the URL and approves; training then resumes (detected by
+ *  the regular avatarStatus polling). `rerouteUrl` is where HeyGen redirects after approval. */
+export async function requestConsent(
+  groupId: string,
+  viewerId: string,
+  token: string,
+  rerouteUrl?: string,
+): Promise<{ url: string }> {
+  await logProviderCall(viewerId, 'heygen.requestConsent', { groupId }, token)
+  if (isMockMode(token)) {
+    return { url: `https://mock.heygen.example/consent/${groupId}` }
+  }
+  const res = await fetch(`${BASE}/avatars/${encodeURIComponent(groupId)}/consent`, {
+    method: 'POST',
+    headers: { 'x-api-key': apiKey(), 'Content-Type': 'application/json' },
+    body: JSON.stringify(rerouteUrl ? { reroute_url: rerouteUrl } : {}),
+    signal: providerTimeout(),
+  })
+  if (!res.ok) throw new ProviderError('heygen', `requestConsent failed: ${res.status}`, res.status)
+  const body = (await res.json()) as { data?: { url?: string }; url?: string }
+  const url = body.data?.url ?? body.url
+  if (!url) throw new ProviderError('heygen', 'requestConsent: missing consent url in response')
+  return { url }
 }
 
 export async function avatarStatus(avatarId: string, viewerId: string, token: string): Promise<HeygenAvatarStatus> {
@@ -80,6 +122,7 @@ export async function avatarStatus(avatarId: string, viewerId: string, token: st
   await logProviderCall(viewerId, 'heygen.avatarStatus', { avatarId, status, raw }, token)
   return {
     status,
+    pendingConsent: raw === 'pending_consent',
     error:
       body.data?.error?.message ??
       (raw === 'pending_consent'
@@ -90,8 +133,14 @@ export async function avatarStatus(avatarId: string, viewerId: string, token: st
 
 /** Starts Avatar V talking-head video generation (9:16) for a trained avatar + a rendered audio
  *  track. Returns HeyGen's video id (poll with videoStatus). */
-export async function createVideo(avatarId: string, audioUrl: string, viewerId: string, token: string): Promise<string> {
-  await logProviderCall(viewerId, 'heygen.createVideo', { avatarId, audioUrl }, token)
+export async function createVideo(
+  avatarId: string,
+  audioUrl: string,
+  viewerId: string,
+  token: string,
+  resolution: '720p' | '1080p' = '720p',
+): Promise<string> {
+  await logProviderCall(viewerId, 'heygen.createVideo', { avatarId, audioUrl, resolution }, token)
   if (isMockMode(token)) {
     return `mock-video-${Buffer.from(avatarId + audioUrl).toString('hex').slice(0, 12)}`
   }
@@ -103,7 +152,7 @@ export async function createVideo(avatarId: string, audioUrl: string, viewerId: 
       avatar_id: avatarId,
       audio_url: audioUrl,
       aspect_ratio: '9:16',
-      resolution: '720p',
+      resolution,
       engine: { type: 'avatar_v' },
     }),
     signal: providerTimeout(),

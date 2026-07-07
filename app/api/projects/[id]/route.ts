@@ -15,6 +15,7 @@ const patchProjectSchema = z.object({
   voiceId: z.string().uuid().nullable().optional(),
   avatarId: z.string().uuid().nullable().optional(),
   voiceMode: z.enum(['tts', 'swap']).optional(),
+  resolution: z.enum(['720p', '1080p']).optional(),
 })
 
 async function loadOwnedProject(id: string, viewerId: string, token: string): Promise<ProjectRow | null> {
@@ -51,6 +52,7 @@ export async function PATCH(request: Request, { params }: { params: { id: string
     if (body.voiceId !== undefined) patch.voice_id = body.voiceId
     if (body.avatarId !== undefined) patch.avatar_id = body.avatarId
     if (body.voiceMode !== undefined) patch.voice_mode = body.voiceMode
+    if (body.resolution !== undefined) patch.resolution = body.resolution
 
     const project = await dbUpdate<ProjectRow>('projects', params.id, patch, viewer.token)
     logger.info({ msg: 'project updated', projectId: params.id, viewerId: viewer.viewerId })

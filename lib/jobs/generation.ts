@@ -133,7 +133,13 @@ async function startVideoJob(project: ProjectRow, audioAsset: AssetRow, viewer: 
   }
   try {
     const { url: audioUrl } = await getPresignedDownloadUrl(audioAsset.storage_key, token)
-    const providerJobId = await heygen.createVideo(avatar?.heygen_avatar_id ?? 'mock', audioUrl, viewerId, token)
+    const providerJobId = await heygen.createVideo(
+      avatar?.heygen_avatar_id ?? 'mock',
+      audioUrl,
+      viewerId,
+      token,
+      project.resolution === '1080p' ? '1080p' : '720p',
+    )
     await dbUpdate<JobRow>('jobs', videoJob.id, { status: 'processing', provider_job_id: providerJobId }, token)
     await scheduleWatchdog({ ...videoJob, status: 'processing', provider_job_id: providerJobId }, token)
   } catch (err) {

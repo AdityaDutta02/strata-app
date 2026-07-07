@@ -3,6 +3,7 @@
 import type { Viewer } from '../auth'
 import { dbGet, dbInsert, dbList, dbUpdate } from '../db'
 import { getPresignedDownloadUrl } from '../storage'
+import { sendEmail } from '../email-sdk'
 import { RATES, bootstrapWorkspace, chargeComped, getWorkspace, reserveCredits } from '../credits'
 import * as heygen from '../providers/heygen'
 import * as fish from '../providers/fish'
@@ -79,10 +80,15 @@ async function runAvatarTraining(job: JobRow, avatar: AvatarRow, viewer: Viewer)
     const key = avatar.training_video_key
     if (!key) throw new JobValidationError('Missing training video upload')
     const { url } = await getPresignedDownloadUrl(key, token)
-    const providerJobId = await heygen.createAvatar(url, viewerId, token)
-    await dbUpdate<AvatarRow>('avatars', avatar.id, { heygen_avatar_id: providerJobId }, token)
-    await dbUpdate<JobRow>('jobs', job.id, { status: 'processing', provider_job_id: providerJobId }, token)
-    await scheduleWatchdog({ ...job, provider_job_id: providerJobId }, token)
+    const created = await heygen.createAvatar(url, viewerId, token)
+    await dbUpdate<AvatarRow>(
+      'avatars',
+      avatar.id,
+      { heygen_avatar_id: created.avatarId, heygen_group_id: created.groupId ?? null },
+      token,
+    )
+    await dbUpdate<JobRow>('jobs', job.id, { status: 'processing', provider_job_id: created.avatarId }, token)
+    await scheduleWatchdog({ ...job, provider_job_id: created.avatarId }, token)
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     await failJob(job, token, message)
@@ -95,6 +101,29 @@ export async function pollAvatarJob(job: JobRow, token: string): Promise<boolean
   const avatarId = job.input_json.avatarId as string | undefined
   const status = await heygen.avatarStatus(job.provider_job_id, job.viewer_id, token)
   if (status.status === 'training') {
+    // pending_consent never dead-ends: request the approval URL once, store it on the
+    // avatar row (surfaced in the UI) and email it to the owner best-effort. Polling
+    // continues and picks the training back up after approval.
+    if (status.pendingConsent && avatarId) {
+      try {
+        const row = await dbGet<AvatarRow>('avatars', avatarId, token)
+        if (!row.consent_url && row.heygen_group_id) {
+          const { url } = await heygen.requestConsent(row.heygen_group_id, job.viewer_id, token)
+          await dbUpdate<AvatarRow>('avatars', avatarId, { consent_url: url }, token)
+          try {
+            await sendEmail(
+              'Strata: avatar consent approval needed',
+              `<p>Your avatar "${row.name}" needs a one-time consent approval before training can finish.</p><p><a href="${url}">Open the consent page</a> (the person in the training footage must approve).</p>`,
+              token,
+            )
+          } catch (emailErr) {
+            logger.warn({ msg: 'consent email failed', avatarId, err: String(emailErr) })
+          }
+        }
+      } catch (consentErr) {
+        logger.warn({ msg: 'consent url request failed', avatarId, err: String(consentErr) })
+      }
+    }
     await scheduleWatchdog(job, token)
     return false
   }
