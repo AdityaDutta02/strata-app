@@ -20,13 +20,24 @@ export async function GET(request: Request): Promise<Response> {
       logger.error({ msg: 'public-asset upstream fetch failed', status: upstream.status })
       return NextResponse.json({ error: 'Asset unavailable' }, { status: 502 })
     }
+    // Never trust upstream content-type on our first-party origin: only passive media
+    // types pass through; anything else is served as a download. nosniff + CSP sandbox
+    // ensure no active content can execute even if a type slips through.
+    const SAFE_TYPES = ['video/mp4', 'video/webm', 'video/quicktime', 'audio/mpeg', 'audio/wav', 'audio/mp4']
+    const upstreamType = (upstream.headers.get('content-type') ?? '').split(';')[0]?.trim().toLowerCase() ?? ''
+    const contentType = SAFE_TYPES.includes(upstreamType) ? upstreamType : 'application/octet-stream'
     return new Response(upstream.body, {
       status: 200,
       headers: {
-        'content-type': upstream.headers.get('content-type') ?? 'application/octet-stream',
+        'content-type': contentType,
+        ...(contentType === 'application/octet-stream'
+          ? { 'content-disposition': 'attachment; filename="asset"' }
+          : {}),
         ...(upstream.headers.get('content-length')
           ? { 'content-length': upstream.headers.get('content-length') as string }
           : {}),
+        'x-content-type-options': 'nosniff',
+        'content-security-policy': "default-src 'none'; sandbox",
         'cache-control': 'private, max-age=0',
       },
     })
