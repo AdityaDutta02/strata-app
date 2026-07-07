@@ -129,6 +129,24 @@ export const api = {
 };
 
 /** Direct-upload helper: presigns then PUTs the file straight to storage. */
+const RELAY_MAX_BYTES = 45 * 1024 * 1024;
+
+/** Server-relay path — used when the browser cannot PUT to object storage directly
+ *  (CORS not configured on the storage host for this origin). ≤45MB only. */
+async function uploadViaRelay(token: string, kind: UploadKind, file: File): Promise<string> {
+  const params = new URLSearchParams({ kind, filename: file.name });
+  const res = await fetch(`/api/uploads/relay?${params}`, {
+    method: "POST",
+    headers: { "content-type": file.type || "application/octet-stream", "x-embed-token": token },
+    body: file,
+  });
+  const body = (await res.json().catch(() => ({}))) as { key?: string; error?: string };
+  if (!res.ok || !body.key) {
+    throw new ApiError(body.error ?? `Upload relay failed with status ${res.status}`, res.status);
+  }
+  return body.key;
+}
+
 export async function uploadFile(token: string, kind: UploadKind, file: File): Promise<string> {
   const presigned = await api.presign(token, {
     kind,
@@ -136,11 +154,22 @@ export async function uploadFile(token: string, kind: UploadKind, file: File): P
     contentType: file.type || "application/octet-stream",
     sizeBytes: file.size,
   });
-  const putRes = await fetch(presigned.url, {
-    method: "PUT",
-    headers: { "content-type": file.type || "application/octet-stream" },
-    body: file,
-  });
+  let putRes: Response;
+  try {
+    putRes = await fetch(presigned.url, {
+      method: "PUT",
+      headers: { "content-type": file.type || "application/octet-stream" },
+      body: file,
+    });
+  } catch {
+    // fetch threw before any response — CORS block or network failure on the
+    // cross-origin storage host. Fall back to relaying through our own server.
+    if (file.size <= RELAY_MAX_BYTES) return uploadViaRelay(token, kind, file);
+    throw new ApiError(
+      "Direct upload to storage was blocked by the browser and the file is too large for the fallback (45MB max). Please retry with a smaller file for now.",
+      0,
+    );
+  }
   if (!putRes.ok) {
     throw new ApiError(`Upload failed with status ${putRes.status}`, putRes.status);
   }
