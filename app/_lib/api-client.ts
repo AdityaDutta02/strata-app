@@ -129,10 +129,10 @@ export const api = {
 };
 
 /** Direct-upload helper: presigns then PUTs the file straight to storage. */
-const RELAY_MAX_BYTES = 45 * 1024 * 1024;
+const RELAY_MAX_BYTES = 800 * 1024 * 1024;
 
 /** Server-relay path — used when the browser cannot PUT to object storage directly
- *  (CORS not configured on the storage host for this origin). ≤45MB only. */
+ *  (CORS not configured on the storage host for this origin). */
 async function uploadViaRelay(token: string, kind: UploadKind, file: File): Promise<string> {
   const params = new URLSearchParams({ kind, filename: file.name });
   const res = await fetch(`/api/uploads/relay?${params}`, {
@@ -166,7 +166,7 @@ export async function uploadFile(token: string, kind: UploadKind, file: File): P
     // cross-origin storage host. Fall back to relaying through our own server.
     if (file.size <= RELAY_MAX_BYTES) return uploadViaRelay(token, kind, file);
     throw new ApiError(
-      "Direct upload to storage was blocked by the browser and the file is too large for the fallback (45MB max). Please retry with a smaller file for now.",
+      "Direct upload to storage was blocked by the browser and the file exceeds the 800MB relay limit. Please compress the recording and retry.",
       0,
     );
   }
