@@ -92,13 +92,19 @@ async function runAvatarTraining(job: JobRow, avatar: AvatarRow, viewer: Viewer)
     const { url } = await getPresignedDownloadUrl(key, token)
     const footageUrl = isMockMode(token) ? url : publicAssetUrl(url, 14 * 60)
     const created = await heygen.createAvatar(footageUrl, viewerId, token)
-    await dbUpdate<AvatarRow>(
-      'avatars',
-      avatar.id,
-      { heygen_avatar_id: created.avatarId, heygen_group_id: created.groupId ?? null },
+    await dbUpdate<AvatarRow>('avatars', avatar.id, { heygen_avatar_id: created.avatarId }, token)
+    // Group id lives in the job's output_json — the live DB predates the avatars-table
+    // columns for it and the platform does not apply ALTER migrations (dev ask filed).
+    await dbUpdate<JobRow>(
+      'jobs',
+      job.id,
+      {
+        status: 'processing',
+        provider_job_id: created.avatarId,
+        output_json: { ...job.output_json, heygenGroupId: created.groupId ?? null },
+      },
       token,
     )
-    await dbUpdate<JobRow>('jobs', job.id, { status: 'processing', provider_job_id: created.avatarId }, token)
     await scheduleWatchdog({ ...job, provider_job_id: created.avatarId }, token)
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
@@ -117,10 +123,12 @@ export async function pollAvatarJob(job: JobRow, token: string): Promise<boolean
     // continues and picks the training back up after approval.
     if (status.pendingConsent && avatarId) {
       try {
-        const row = await dbGet<AvatarRow>('avatars', avatarId, token)
-        if (!row.consent_url && row.heygen_group_id) {
-          const { url } = await heygen.requestConsent(row.heygen_group_id, job.viewer_id, token)
-          await dbUpdate<AvatarRow>('avatars', avatarId, { consent_url: url }, token)
+        const groupId = job.output_json.heygenGroupId as string | null | undefined
+        const alreadyRequested = typeof job.output_json.consentUrl === 'string'
+        if (!alreadyRequested && groupId) {
+          const row = await dbGet<AvatarRow>('avatars', avatarId, token)
+          const { url } = await heygen.requestConsent(groupId, job.viewer_id, token)
+          await dbUpdate<JobRow>('jobs', job.id, { output_json: { ...job.output_json, consentUrl: url } }, token)
           try {
             await sendEmail(
               'Strata: avatar consent approval needed',

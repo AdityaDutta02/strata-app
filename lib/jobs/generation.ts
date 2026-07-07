@@ -19,6 +19,9 @@ import type { AssetRow, AvatarRow, JobRow, JobType, NotesLine, ProjectRow, Voice
 
 export interface GenerateBody {
   recordingKey?: string
+  /** Render quality — 720p standard, 1080p optional. Carried in the video job's
+   *  input_json (the live projects table has no resolution column). */
+  resolution?: '720p' | '1080p'
 }
 
 export async function createGeneration(project: ProjectRow, viewer: Viewer, body: GenerateBody): Promise<{ generationJobs: JobRow[] }> {
@@ -59,7 +62,7 @@ export async function createGeneration(project: ProjectRow, viewer: Viewer, body
   )
   await dbInsert<JobRow>(
     'jobs',
-    { viewer_id: viewerId, project_id: project.id, type: 'video_gen', status: 'queued', input_json: {}, output_json: {}, credits_reserved: videoCredits, credits_charged: 0 },
+    { viewer_id: viewerId, project_id: project.id, type: 'video_gen', status: 'queued', input_json: { resolution: body.resolution ?? '720p' }, output_json: {}, credits_reserved: videoCredits, credits_charged: 0 },
     token,
   )
   await dbInsert<JobRow>(
@@ -150,7 +153,7 @@ async function startVideoJob(project: ProjectRow, audioAsset: AssetRow, viewer: 
       heygenAudioUrl,
       viewerId,
       token,
-      project.resolution === '1080p' ? '1080p' : '720p',
+      videoJob.input_json.resolution === '1080p' ? '1080p' : '720p',
     )
     await dbUpdate<JobRow>('jobs', videoJob.id, { status: 'processing', provider_job_id: providerJobId }, token)
     await scheduleWatchdog({ ...videoJob, status: 'processing', provider_job_id: providerJobId }, token)

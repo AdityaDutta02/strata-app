@@ -23,7 +23,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
     if (!avatar.training_video_key) {
       return NextResponse.json({ error: 'No training footage on file — onboard again' }, { status: 400 })
     }
-    await dbUpdate<AvatarRow>('avatars', avatar.id, { status: 'training', error: null, consent_url: null }, viewer.token)
+    await dbUpdate<AvatarRow>('avatars', avatar.id, { status: 'training', error: null }, viewer.token)
     const job = await dbInsert<JobRow>(
       'jobs',
       {

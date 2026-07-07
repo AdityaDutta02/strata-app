@@ -9,6 +9,7 @@ import type { ProjectRow } from '../../../../../lib/types'
 
 const generateSchema = z.object({
   recordingKey: z.string().trim().min(1).optional(),
+  resolution: z.enum(['720p', '1080p']).optional(),
 })
 
 export async function POST(request: Request, { params }: { params: { id: string } }): Promise<NextResponse> {

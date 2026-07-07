@@ -29,7 +29,6 @@ export interface ProjectRow {
   voice_id: string | null
   avatar_id: string | null
   voice_mode: VoiceMode
-  resolution: '720p' | '1080p'
   credits_spent: number
   created_at: string
   updated_at: string
@@ -56,8 +55,9 @@ export interface AvatarRow {
   name: string
   status: TrainingStatus
   heygen_avatar_id: string | null
-  heygen_group_id: string | null
-  consent_url: string | null
+  /** Synthesized by GET /api/avatars from the avatar_create job's output_json — NOT a DB
+   *  column (live DB predates it; platform doesn't apply ALTER migrations). */
+  consent_url?: string | null
   training_video_key: string | null
   thumb_key: string | null
   error: string | null

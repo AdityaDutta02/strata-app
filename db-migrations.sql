@@ -62,7 +62,9 @@ CREATE TABLE IF NOT EXISTS avatars (
 );
 CREATE INDEX IF NOT EXISTS idx_avatars_viewer ON avatars (viewer_id);
 
--- Additive migrations (file re-runs idempotently at each deploy)
+-- Additive migrations — WARNING: the platform applied this file ONCE at first provisioning
+-- and does NOT re-run it on redeploy (confirmed 2026-07-07; dev ask filed). These ALTERs are
+-- documentation of the intended schema; the app avoids depending on them (JSONB fallbacks).
 ALTER TABLE avatars ADD COLUMN IF NOT EXISTS heygen_group_id TEXT;
 ALTER TABLE avatars ADD COLUMN IF NOT EXISTS consent_url TEXT;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS resolution TEXT NOT NULL DEFAULT '720p'; -- 720p standard, 1080p optional
