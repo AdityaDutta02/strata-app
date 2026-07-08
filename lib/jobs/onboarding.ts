@@ -2,8 +2,7 @@
 // triggered from POST /api/onboard. First avatar+voice per workspace is comped (0cr).
 import type { Viewer } from '../auth'
 import { dbGet, dbInsert, dbList, dbUpdate } from '../db'
-import { getPresignedDownloadUrl } from '../storage'
-import { r2Upload, r2Download } from '../storage-r2'
+import { r2Download, r2PresignedGetUrl } from '../storage-r2'
 import { withRetry } from '../retry'
 import { sendEmail } from '../email-sdk'
 import { RATES, bootstrapWorkspace, chargeComped, getWorkspace, reserveCredits } from '../credits'
@@ -52,55 +51,6 @@ async function step<T>(label: string, fn: () => Promise<T>): Promise<T> {
     if (err instanceof JobValidationError) throw err
     throw new JobValidationError(`${label} — ${describeError(err)}`)
   }
-}
-
-function contentTypeForKey(key: string): string {
-  const lower = key.toLowerCase()
-  if (lower.endsWith('.webm')) return 'video/webm'
-  if (lower.endsWith('.wav')) return 'audio/wav'
-  if (lower.endsWith('.mp3')) return 'audio/mpeg'
-  return 'video/mp4'
-}
-
-/** Downloads `key` from Terminal AI storage once and copies it into R2 (retry-wrapped — this
- *  is the one hop that touches the platform's flaky storage host). Every subsequent read of
- *  this asset — retries, HeyGen/Fish upload — goes to R2 instead. Returns the downloaded bytes. */
-async function copyToR2(key: string, r2Key: string, token: string, maxBytes?: number): Promise<Buffer> {
-  return step('Copying footage to backup storage', () =>
-    withRetry(
-      async () => {
-        const { url } = await getPresignedDownloadUrl(key, token)
-        const res = await fetch(url, { signal: AbortSignal.timeout(5 * 60_000) })
-        if (!res.ok) throw new JobValidationError(`Could not read training footage from storage (${res.status})`)
-        const declared = Number(res.headers.get('content-length') ?? '0')
-        if (maxBytes && declared > maxBytes) throw new JobValidationError(footageTooLargeMessage(declared))
-        const buffer = Buffer.from(await res.arrayBuffer())
-        if (maxBytes && buffer.byteLength > maxBytes) throw new JobValidationError(footageTooLargeMessage(buffer.byteLength))
-        await r2Upload(r2Key, buffer, contentTypeForKey(key))
-        return buffer
-      },
-      { baseDelayMs: 300 },
-    ),
-  )
-}
-
-/** Reads the asset for this job: from R2 if already copied (recorded as `output_json.r2Key`),
- *  otherwise copies it from Terminal AI storage into R2 first (see copyToR2). */
-async function readTrainingAsset(
-  job: JobRow,
-  key: string,
-  token: string,
-  maxBytes?: number,
-): Promise<{ buffer: Buffer; r2Key: string }> {
-  const existingR2Key = job.output_json.r2Key as string | undefined
-  if (existingR2Key) {
-    const buffer = await step('Reading footage from backup storage', () => withRetry(() => r2Download(existingR2Key)))
-    return { buffer, r2Key: existingR2Key }
-  }
-  const r2Key = `onboarding/${job.viewer_id}/${job.id}/${key.split('/').pop()}`
-  const buffer = await copyToR2(key, r2Key, token, maxBytes)
-  await dbUpdate<JobRow>('jobs', job.id, { output_json: { ...job.output_json, r2Key } }, token)
-  return { buffer, r2Key }
 }
 
 export async function createOnboardingJobs(
@@ -173,11 +123,13 @@ async function runAvatarTraining(job: JobRow, avatar: AvatarRow, viewer: Viewer)
     if (!key) throw new JobValidationError('Missing training video upload')
     let created
     if (isMockMode(token)) {
-      const { url } = await getPresignedDownloadUrl(key, token)
-      created = await heygen.createAvatar({ type: 'url', url }, viewerId, token)
+      created = await heygen.createAvatar({ type: 'url', url: `mock://r2/${key}` }, viewerId, token)
     } else {
-      const fresh = await dbGet<JobRow>('jobs', job.id, token)
-      const { buffer } = await readTrainingAsset(fresh, key, token, HEYGEN_ASSET_MAX_BYTES)
+      // Training footage was uploaded directly from the browser to our own R2 bucket (see
+      // /api/uploads/r2-presign) — this never touches Terminal AI storage, so there is no
+      // dependency on that host's reliability here.
+      const buffer = await step('Downloading footage from storage', () => withRetry(() => r2Download(key), { baseDelayMs: 300 }))
+      if (buffer.byteLength > HEYGEN_ASSET_MAX_BYTES) throw new JobValidationError(footageTooLargeMessage(buffer.byteLength))
       const contentType = key.toLowerCase().endsWith('.webm') ? 'video/webm' : 'video/mp4'
       const asset = await step('Uploading footage to HeyGen', () =>
         withRetry(() => heygen.uploadAsset(buffer, contentType, 'training.mp4', viewerId, token)),
@@ -259,18 +211,16 @@ async function runVoiceCloneTraining(job: JobRow, voice: VoiceRow, viewer: Viewe
     if (!key) throw new JobValidationError('Missing voice sample upload')
     let fishVoiceId: string
     if (isMockMode(token)) {
-      const { url } = await getPresignedDownloadUrl(key, token)
-      fishVoiceId = await fish.cloneVoice(url, voice.name, viewerId, token)
+      fishVoiceId = await fish.cloneVoice(`mock://r2/${key}`, voice.name, viewerId, token)
     } else {
-      const fresh = await dbGet<JobRow>('jobs', job.id, token)
-      const { buffer } = await readTrainingAsset(fresh, key, token)
+      const buffer = await step('Downloading voice sample from storage', () => withRetry(() => r2Download(key), { baseDelayMs: 300 }))
       fishVoiceId = await step('Cloning voice with Fish Audio', () =>
         withRetry(() => fish.cloneVoiceFromBuffer(buffer, voice.name, viewerId, token)),
       )
     }
     let kitsVoiceId: string | null = null
     try {
-      const { url } = await getPresignedDownloadUrl(key, token)
+      const url = isMockMode(token) ? `mock://r2/${key}` : r2PresignedGetUrl(key)
       kitsVoiceId = await kits.createTargetVoice(url, voice.name, viewerId, token)
     } catch (kitsErr) {
       logger.warn({

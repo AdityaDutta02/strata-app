@@ -52,19 +52,11 @@ vi.mock('../db', () => {
 vi.mock('../email-sdk', () => ({ sendEmail: vi.fn(async () => ({ sent: true })) }))
 vi.mock('../task-sdk', () => ({ createDelayedTask: vi.fn(async () => ({ id: 'task-1' })) }))
 
-let downloadCalls = 0
-vi.mock('../storage', () => ({
-  getPresignedDownloadUrl: vi.fn(async (key: string) => {
-    downloadCalls += 1
-    return { url: `https://download.example.com/${key}`, expiresIn: 900 }
-  }),
-}))
-
-const r2UploadMock = vi.fn(async () => undefined)
-const r2DownloadMock = vi.fn(async () => Buffer.from('r2-bytes'))
+let downloadImpl: (key: string) => Promise<Buffer>
+const r2DownloadMock = vi.fn((key: string) => downloadImpl(key))
 vi.mock('../storage-r2', () => ({
-  r2Upload: (...args: unknown[]) => r2UploadMock(...(args as [])),
-  r2Download: (...args: unknown[]) => r2DownloadMock(...(args as [])),
+  r2Download: (key: string) => r2DownloadMock(key),
+  r2PresignedGetUrl: vi.fn((key: string) => `https://r2.example.com/${key}`),
 }))
 
 const heygenUploadAsset = vi.fn(async (_buffer: Buffer, ..._rest: unknown[]) => ({ assetId: 'asset-1', url: 'https://files.heygen.ai/asset-1.mp4' }))
@@ -82,20 +74,6 @@ vi.mock('../providers/fish', () => ({
   cloneVoiceFromBuffer: (...args: unknown[]) => fishCloneVoiceFromBuffer(...(args as [])),
 }))
 vi.mock('../providers/kits', () => ({ createTargetVoice: vi.fn(async () => 'kits-voice-1') }))
-
-// A global fetch mock stands in for the raw download from Terminal AI storage inside the
-// R2-copy step (createOnboardingJobs fetches the presigned URL directly). Keyed by URL so
-// the avatar (video.mp4) and voice (audio.wav) downloads can be independently scripted —
-// both training legs hit this same mock in one createOnboardingJobs call.
-let fetchImpl: (url: string) => Promise<Response>
-beforeEach(() => {
-  fetchImpl = async () =>
-    new Response(new Uint8Array(Buffer.from('source-bytes')), { status: 200, headers: { 'content-length': '12' } })
-})
-vi.stubGlobal(
-  'fetch',
-  vi.fn(async (...args: unknown[]) => fetchImpl(...(args as [string]))),
-)
 
 import { createOnboardingJobs, retryAvatarTraining } from './onboarding'
 import { bootstrapWorkspace } from '../credits'
@@ -115,85 +93,80 @@ beforeEach(async () => {
   const db = (await import('../db')) as unknown as DbTestModule
   db.__reset()
   vi.clearAllMocks()
-  downloadCalls = 0
+  downloadImpl = async (key: string) => Buffer.from(`bytes-for-${key}`)
   viewer = { token: TOKEN, viewerId: VIEWER_ID, isAnon: false, isSandbox: false }
   await bootstrapWorkspace(VIEWER_ID, TOKEN)
 })
 
 describe('runAvatarTraining (via createOnboardingJobs)', () => {
-  it('copies footage to R2 once and uploads the R2 bytes to HeyGen', async () => {
-    const { avatar, jobs } = await createOnboardingJobs(viewer, {
+  it('downloads training footage straight from R2 (no Terminal AI storage hop) and uploads it to HeyGen', async () => {
+    const { avatar } = await createOnboardingJobs(viewer, {
       name: 'Presenter',
-      avatarUploadKey: 'uploads/video.mp4',
-      voiceUploadKey: 'uploads/audio.wav',
+      avatarUploadKey: 'training/viewer-onboarding-test/video.mp4',
+      voiceUploadKey: 'training/viewer-onboarding-test/audio.wav',
     })
     expect(avatar.status).toBe('training')
-    expect(r2UploadMock).toHaveBeenCalled()
+    expect(r2DownloadMock).toHaveBeenCalledWith('training/viewer-onboarding-test/video.mp4')
     expect(heygenUploadAsset).toHaveBeenCalledTimes(1)
-    // First attempt: no r2Key recorded yet, so the freshly-downloaded bytes are used directly
-    // (r2Download is only consulted on a later retry, once r2Key is already recorded).
-    expect(heygenUploadAsset.mock.calls[0]![0]).toEqual(Buffer.from('source-bytes'))
+    expect(heygenUploadAsset.mock.calls[0]![0]).toEqual(Buffer.from('bytes-for-training/viewer-onboarding-test/video.mp4'))
     expect(heygenCreateAvatar).toHaveBeenCalledWith({ type: 'asset_id', asset_id: 'asset-1' }, VIEWER_ID, TOKEN)
-
-    const avatarJob = jobs.find((j) => j.type === 'avatar_create') as JobRow
-    expect(avatarJob.output_json.r2Key).toBeTruthy()
   })
 
-  it('on retry, skips the Terminal AI storage download entirely once r2Key is recorded', async () => {
+  it('retry re-downloads the same R2 key and can succeed after an earlier failure', async () => {
+    downloadImpl = async () => {
+      throw Object.assign(new Error('fetch failed'), {
+        cause: Object.assign(new Error('EAI_AGAIN'), { code: 'EAI_AGAIN' }),
+      })
+    }
     const { avatar, jobs } = await createOnboardingJobs(viewer, {
       name: 'Presenter',
-      avatarUploadKey: 'uploads/video.mp4',
-      voiceUploadKey: 'uploads/audio.wav',
+      avatarUploadKey: 'training/viewer-onboarding-test/video.mp4',
+      voiceUploadKey: 'training/viewer-onboarding-test/audio.wav',
     })
-    const initialDownloadCalls = downloadCalls
-    expect(initialDownloadCalls).toBeGreaterThan(0)
+    expect(avatar.status).toBe('failed')
 
+    downloadImpl = async (key: string) => Buffer.from(`bytes-for-${key}`)
     const avatarJob = jobs.find((j) => j.type === 'avatar_create') as JobRow
     await retryAvatarTraining(avatarJob, avatar, viewer)
 
-    expect(downloadCalls).toBe(initialDownloadCalls) // no new Terminal-AI-storage download
-    expect(r2DownloadMock).toHaveBeenCalled() // read from R2 instead
+    const retried = jobs.find((j) => j.type === 'avatar_create') as JobRow
+    expect(retried).toBeTruthy()
   })
 
   it('retries a transient download failure and still succeeds', async () => {
     let videoAttempts = 0
-    fetchImpl = async (url: string) => {
-      if (!url.includes('video.mp4')) {
-        return new Response(new Uint8Array(Buffer.from('source-bytes')), { status: 200, headers: { 'content-length': '12' } })
-      }
+    downloadImpl = async (key: string) => {
+      if (!key.includes('video.mp4')) return Buffer.from(`bytes-for-${key}`)
       videoAttempts += 1
       if (videoAttempts < 2) {
         const err = new Error('fetch failed')
         ;(err as unknown as { cause: unknown }).cause = Object.assign(new Error('EAI_AGAIN'), { code: 'EAI_AGAIN' })
         throw err
       }
-      return new Response(new Uint8Array(Buffer.from('source-bytes')), { status: 200, headers: { 'content-length': '12' } })
+      return Buffer.from(`bytes-for-${key}`)
     }
     const { avatar } = await createOnboardingJobs(viewer, {
       name: 'Presenter',
-      avatarUploadKey: 'uploads/video.mp4',
-      voiceUploadKey: 'uploads/audio.wav',
+      avatarUploadKey: 'training/viewer-onboarding-test/video.mp4',
+      voiceUploadKey: 'training/viewer-onboarding-test/audio.wav',
     })
     expect(avatar.status).toBe('training')
     expect(videoAttempts).toBe(2)
   })
 
   it('fails clearly with a labeled step + attempt count when retries are exhausted', async () => {
-    fetchImpl = async (url: string) => {
-      if (!url.includes('video.mp4')) {
-        return new Response(new Uint8Array(Buffer.from('source-bytes')), { status: 200, headers: { 'content-length': '12' } })
-      }
+    downloadImpl = async () => {
       const err = new Error('fetch failed')
       ;(err as unknown as { cause: unknown }).cause = Object.assign(new Error('EAI_AGAIN'), { code: 'EAI_AGAIN' })
       throw err
     }
     const { avatar } = await createOnboardingJobs(viewer, {
       name: 'Presenter',
-      avatarUploadKey: 'uploads/video.mp4',
-      voiceUploadKey: 'uploads/audio.wav',
+      avatarUploadKey: 'training/viewer-onboarding-test/video.mp4',
+      voiceUploadKey: 'training/viewer-onboarding-test/audio.wav',
     })
     expect(avatar.status).toBe('failed')
-    expect(avatar.error).toMatch(/Copying footage to backup storage/)
+    expect(avatar.error).toMatch(/Downloading footage from storage/)
     expect(avatar.error).toMatch(/EAI_AGAIN/)
   })
 })

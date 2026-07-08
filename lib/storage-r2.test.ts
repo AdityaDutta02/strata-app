@@ -48,4 +48,21 @@ describe('storage-r2', () => {
     const { r2Upload } = await import('./storage-r2')
     await expect(r2Upload('k', Buffer.from('x'), 'video/mp4')).rejects.toThrow(/R2_BUCKET/)
   })
+
+  it('r2PresignedPutUrl returns a query-signed URL for the given key', async () => {
+    const { r2PresignedPutUrl } = await import('./storage-r2')
+    const url = r2PresignedPutUrl('training/foo.mp4', 900)
+    expect(url).toMatch(/^https:\/\/acct-1\.r2\.cloudflarestorage\.com\/strata-bucket\/training\/foo\.mp4\?/)
+    expect(url).toContain('X-Amz-Algorithm=AWS4-HMAC-SHA256')
+    expect(url).toContain('X-Amz-Credential=key-1%2F')
+    expect(url).toContain('X-Amz-Expires=900')
+    expect(url).toContain('X-Amz-Signature=')
+  })
+
+  it('r2PresignedGetUrl returns a query-signed URL for the given key', async () => {
+    const { r2PresignedGetUrl } = await import('./storage-r2')
+    const url = r2PresignedGetUrl('training/foo.mp4')
+    expect(url).toMatch(/^https:\/\/acct-1\.r2\.cloudflarestorage\.com\/strata-bucket\/training\/foo\.mp4\?/)
+    expect(url).toContain('X-Amz-Signature=')
+  })
 })

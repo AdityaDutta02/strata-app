@@ -89,3 +89,52 @@ export async function r2Download(key: string): Promise<Buffer> {
   if (!res.ok) throw new Error(`R2 download failed: ${res.status} ${await res.text().catch(() => '')}`)
   return Buffer.from(await res.arrayBuffer())
 }
+
+/** Presigned URL (query-string SigV4, not header auth) — lets a browser PUT directly to R2,
+ *  or an external provider (Kits) GET an object, without the request going through our server
+ *  or Terminal AI's storage at all. */
+function presignedUrl(method: 'GET' | 'PUT', bucket: string, key: string, expiresSeconds: number): string {
+  const accountId = env('R2_ACCOUNT_ID')
+  const accessKeyId = env('R2_ACCESS_KEY_ID')
+  const secretAccessKey = env('R2_SECRET_ACCESS_KEY')
+  const host = `${accountId}.r2.cloudflarestorage.com`
+  const now = new Date()
+  const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, '')
+  const dateStamp = amzDate.slice(0, 8)
+  const credentialScope = `${dateStamp}/auto/s3/aws4_request`
+  const path = canonicalPath(bucket, key)
+
+  const queryParams: Array<[string, string]> = [
+    ['X-Amz-Algorithm', 'AWS4-HMAC-SHA256'],
+    ['X-Amz-Credential', `${accessKeyId}/${credentialScope}`],
+    ['X-Amz-Date', amzDate],
+    ['X-Amz-Expires', String(expiresSeconds)],
+    ['X-Amz-SignedHeaders', 'host'],
+  ]
+  const canonicalQueryString = queryParams
+    .slice()
+    .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+    .map(([k, v]) => `${encodeRfc3986(k)}=${encodeRfc3986(v)}`)
+    .join('&')
+
+  const canonicalHeaders = `host:${host}\n`
+  const signedHeaders = 'host'
+  const canonicalRequest = [method, path, canonicalQueryString, canonicalHeaders, signedHeaders, 'UNSIGNED-PAYLOAD'].join('\n')
+  const stringToSign = ['AWS4-HMAC-SHA256', amzDate, credentialScope, sha256Hex(canonicalRequest)].join('\n')
+
+  const kDate = hmac(`AWS4${secretAccessKey}`, dateStamp)
+  const kRegion = hmac(kDate, 'auto')
+  const kService = hmac(kRegion, 's3')
+  const kSigning = hmac(kService, 'aws4_request')
+  const signature = hmac(kSigning, stringToSign).toString('hex')
+
+  return `https://${host}${path}?${canonicalQueryString}&X-Amz-Signature=${signature}`
+}
+
+export function r2PresignedPutUrl(key: string, expiresSeconds = 900): string {
+  return presignedUrl('PUT', env('R2_BUCKET'), key, expiresSeconds)
+}
+
+export function r2PresignedGetUrl(key: string, expiresSeconds = 900): string {
+  return presignedUrl('GET', env('R2_BUCKET'), key, expiresSeconds)
+}

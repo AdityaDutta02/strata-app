@@ -122,6 +122,15 @@ export const api = {
   ): Promise<PresignResponse> =>
     request<PresignResponse>(token, "/api/uploads/presign", { method: "POST", body: JSON.stringify(body) }),
 
+  r2Presign: (
+    token: string,
+    body: { kind: "avatar_training" | "voice_training"; filename: string; contentType: string }
+  ): Promise<{ url: string; key: string }> =>
+    request<{ url: string; key: string }>(token, "/api/uploads/r2-presign", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
   jobs: {
     list: async (token: string, projectId: string): Promise<Job[]> =>
       (await request<{ jobs: Job[] }>(token, `/api/jobs?projectId=${encodeURIComponent(projectId)}`)).jobs,
@@ -181,4 +190,27 @@ export async function uploadFile(token: string, kind: UploadKind, file: File): P
     throw new ApiError(`Upload failed with status ${putRes.status}`, putRes.status);
   }
   return presigned.key;
+}
+
+/** Direct-to-R2 upload for avatar/voice training assets — bypasses Terminal AI storage
+ *  entirely (the training pipeline reads these straight back out of R2). */
+export async function uploadFileToR2(
+  token: string,
+  kind: "avatar_training" | "voice_training",
+  file: File
+): Promise<string> {
+  const { url, key } = await api.r2Presign(token, {
+    kind,
+    filename: file.name,
+    contentType: file.type || "application/octet-stream",
+  });
+  const res = await fetch(url, {
+    method: "PUT",
+    headers: { "content-type": file.type || "application/octet-stream" },
+    body: file,
+  });
+  if (!res.ok) {
+    throw new ApiError(`Upload to storage failed with status ${res.status}`, res.status);
+  }
+  return key;
 }

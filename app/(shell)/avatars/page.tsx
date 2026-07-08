@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { Mic, Clapperboard, Loader2, Upload, UserPlus, Trash2, RefreshCw } from "lucide-react";
 import Button from "@/components/Button";
 import StatusPill, { jobStatusToAssetStatus } from "@/components/StatusPill";
-import { api, ApiError, uploadFile } from "@/app/_lib/api-client";
+import { api, ApiError, uploadFileToR2 } from "@/app/_lib/api-client";
 import { useAuth } from "@/context/AuthContext";
 import type { Avatar, Voice } from "@/app/_lib/types";
 
@@ -105,8 +105,8 @@ export default function AvatarsPage() {
         return;
       }
       const [avatarUploadKey, voiceUploadKey] = await Promise.all([
-        uploadFile(token, "avatar_training", videoFile),
-        uploadFile(token, "voice_training", audioFile),
+        uploadFileToR2(token, "avatar_training", videoFile),
+        uploadFileToR2(token, "voice_training", audioFile),
       ]);
       await api.onboard(token, { name: name.trim(), avatarUploadKey, voiceUploadKey });
       setShowForm(false);
