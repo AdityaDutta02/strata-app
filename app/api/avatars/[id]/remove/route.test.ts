@@ -71,8 +71,8 @@ describe('POST /api/avatars/[id]/remove', () => {
 
     const avatarJobs = await dbList<JobRow>('jobs', { viewer_id: VIEWER, type: 'avatar_create' }, VIEWER)
     const voiceJobs = await dbList<JobRow>('jobs', { viewer_id: VIEWER, type: 'voice_clone' }, VIEWER)
-    expect(avatarJobs[0].output_json.hidden).toBe(true)
-    expect(voiceJobs[0].output_json.hidden).toBe(true)
+    expect(avatarJobs[0]!.output_json.hidden).toBe(true)
+    expect(voiceJobs[0]!.output_json.hidden).toBe(true)
   })
 
   it('404s when the avatar does not belong to the caller', async () => {

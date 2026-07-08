@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { LayoutGrid, FolderOpen, Settings, Layers, Coins, Plus, Mail } from "lucide-react";
+import { LayoutGrid, FolderOpen, Settings, Layers, Coins, Plus, Mail, UserSquare2 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import Button from "./Button";
 import { formatCredits } from "@/app/_lib/format";
@@ -17,6 +17,7 @@ interface NavItem {
 
 const NAV: NavItem[] = [
   { to: "/", label: "Projects", icon: LayoutGrid },
+  { to: "/avatars", label: "Avatars", icon: UserSquare2 },
   { to: "/library", label: "Library", icon: FolderOpen },
   { to: "/settings", label: "Settings", icon: Settings },
 ];

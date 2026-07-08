@@ -106,6 +106,10 @@ export const api = {
   retryAvatar: async (token: string, id: string): Promise<Avatar> =>
     (await request<{ avatar: Avatar }>(token, `/api/avatars/${id}/retry`, { method: "POST" })).avatar,
 
+  removeAvatar: async (token: string, id: string): Promise<void> => {
+    await request<{ ok: boolean }>(token, `/api/avatars/${id}/remove`, { method: "POST" });
+  },
+
   onboard: (
     token: string,
     body: { name: string; avatarUploadKey: string; voiceUploadKey: string }

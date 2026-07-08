@@ -67,10 +67,10 @@ vi.mock('../storage-r2', () => ({
   r2Download: (...args: unknown[]) => r2DownloadMock(...(args as [])),
 }))
 
-const heygenUploadAsset = vi.fn(async () => ({ assetId: 'asset-1', url: 'https://files.heygen.ai/asset-1.mp4' }))
+const heygenUploadAsset = vi.fn(async (_buffer: Buffer, ..._rest: unknown[]) => ({ assetId: 'asset-1', url: 'https://files.heygen.ai/asset-1.mp4' }))
 const heygenCreateAvatar = vi.fn(async () => ({ avatarId: 'heygen-avatar-1', groupId: 'group-1' }))
 vi.mock('../providers/heygen', () => ({
-  uploadAsset: (...args: unknown[]) => heygenUploadAsset(...(args as [])),
+  uploadAsset: (...args: unknown[]) => heygenUploadAsset(...(args as [Buffer])),
   createAvatar: (...args: unknown[]) => heygenCreateAvatar(...(args as [])),
   avatarStatus: vi.fn(async () => ({ status: 'training' as const })),
   requestConsent: vi.fn(async () => ({ url: 'https://consent.example.com' })),
@@ -132,7 +132,7 @@ describe('runAvatarTraining (via createOnboardingJobs)', () => {
     expect(heygenUploadAsset).toHaveBeenCalledTimes(1)
     // First attempt: no r2Key recorded yet, so the freshly-downloaded bytes are used directly
     // (r2Download is only consulted on a later retry, once r2Key is already recorded).
-    expect(heygenUploadAsset.mock.calls[0][0]).toEqual(Buffer.from('source-bytes'))
+    expect(heygenUploadAsset.mock.calls[0]![0]).toEqual(Buffer.from('source-bytes'))
     expect(heygenCreateAvatar).toHaveBeenCalledWith({ type: 'asset_id', asset_id: 'asset-1' }, VIEWER_ID, TOKEN)
 
     const avatarJob = jobs.find((j) => j.type === 'avatar_create') as JobRow

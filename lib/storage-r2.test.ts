@@ -21,7 +21,7 @@ describe('storage-r2', () => {
     const { r2Upload } = await import('./storage-r2')
     await r2Upload('training/foo.mp4', Buffer.from('bytes'), 'video/mp4')
     expect(send).toHaveBeenCalledTimes(1)
-    const cmd = send.mock.calls[0][0] as { input: Record<string, unknown> }
+    const cmd = send.mock.calls[0]![0] as { input: Record<string, unknown> }
     expect(cmd.input).toMatchObject({ Bucket: 'strata-bucket', Key: 'training/foo.mp4', ContentType: 'video/mp4' })
   })
 
@@ -32,7 +32,7 @@ describe('storage-r2', () => {
     const { r2Download } = await import('./storage-r2')
     const result = await r2Download('training/foo.mp4')
     expect(result.toString()).toBe('hello world')
-    const cmd = send.mock.calls[0][0] as { input: Record<string, unknown> }
+    const cmd = send.mock.calls[0]![0] as { input: Record<string, unknown> }
     expect(cmd.input).toMatchObject({ Bucket: 'strata-bucket', Key: 'training/foo.mp4' })
   })
 
