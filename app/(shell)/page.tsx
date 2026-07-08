@@ -1,7 +1,8 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Search, Plus, FolderPlus } from "lucide-react";
+import Link from "next/link";
+import { Search, Plus, FolderPlus, UserPlus } from "lucide-react";
 import Button from "@/components/Button";
 import ProjectCard from "@/components/ProjectCard";
 import { api, ApiError } from "@/app/_lib/api-client";
@@ -32,14 +33,18 @@ export default function Dashboard() {
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
+  const [hasAvatar, setHasAvatar] = useState(true); // optimistic — avoids a flash before load
 
   useEffect(() => {
     if (!token) return;
     let cancelled = false;
     (async () => {
       try {
-        const list = await api.projects.list(token);
-        if (!cancelled) setProjects(list);
+        const [list, avatars] = await Promise.all([api.projects.list(token), api.avatars(token)]);
+        if (!cancelled) {
+          setProjects(list);
+          setHasAvatar(avatars.length > 0);
+        }
       } catch (e) {
         if (!cancelled) setError(e instanceof ApiError ? e.message : "Failed to load projects");
       } finally {
@@ -114,6 +119,15 @@ export default function Dashboard() {
           </Button>
         </div>
       </div>
+
+      {!loading && !hasAvatar && (
+        <div className="mt-5 flex items-center justify-between gap-3 rounded-sm border border-line-subtle bg-surface-subtle px-4 py-3">
+          <p className="text-sm text-fg-secondary">Train your avatar &amp; voice before generating a video.</p>
+          <Link href="/avatars">
+            <Button variant="secondary" size="sm" icon={UserPlus}>Add avatar</Button>
+          </Link>
+        </div>
+      )}
 
       {/* Filter tabs — underline register */}
       <div className="mt-6 flex items-center gap-6 border-b border-line-subtle">
