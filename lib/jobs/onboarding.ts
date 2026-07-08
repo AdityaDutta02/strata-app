@@ -3,6 +3,8 @@
 import type { Viewer } from '../auth'
 import { dbGet, dbInsert, dbList, dbUpdate } from '../db'
 import { getPresignedDownloadUrl } from '../storage'
+import { r2Upload, r2Download } from '../storage-r2'
+import { withRetry } from '../retry'
 import { sendEmail } from '../email-sdk'
 import { RATES, bootstrapWorkspace, chargeComped, getWorkspace, reserveCredits } from '../credits'
 import * as heygen from '../providers/heygen'
@@ -37,7 +39,9 @@ function describeError(err: unknown): string {
   if (cause instanceof Error) causeText = cause.message
   else if (cause && typeof cause === 'object' && 'code' in cause) causeText = String((cause as { code: unknown }).code)
   else if (typeof cause === 'string') causeText = cause
-  return causeText ? `${err.message} (${causeText})` : err.message
+  const attempts = (err as { attempts?: number }).attempts
+  const attemptsText = attempts ? ` — failed after ${attempts} attempt${attempts === 1 ? '' : 's'}` : ''
+  return causeText ? `${err.message}${attemptsText} (${causeText})` : `${err.message}${attemptsText}`
 }
 
 /** Runs a network step, re-throwing transport failures with a step label + unwrapped cause. */
@@ -48,6 +52,55 @@ async function step<T>(label: string, fn: () => Promise<T>): Promise<T> {
     if (err instanceof JobValidationError) throw err
     throw new JobValidationError(`${label} — ${describeError(err)}`)
   }
+}
+
+function contentTypeForKey(key: string): string {
+  const lower = key.toLowerCase()
+  if (lower.endsWith('.webm')) return 'video/webm'
+  if (lower.endsWith('.wav')) return 'audio/wav'
+  if (lower.endsWith('.mp3')) return 'audio/mpeg'
+  return 'video/mp4'
+}
+
+/** Downloads `key` from Terminal AI storage once and copies it into R2 (retry-wrapped — this
+ *  is the one hop that touches the platform's flaky storage host). Every subsequent read of
+ *  this asset — retries, HeyGen/Fish upload — goes to R2 instead. Returns the downloaded bytes. */
+async function copyToR2(key: string, r2Key: string, token: string, maxBytes?: number): Promise<Buffer> {
+  return step('Copying footage to backup storage', () =>
+    withRetry(
+      async () => {
+        const { url } = await getPresignedDownloadUrl(key, token)
+        const res = await fetch(url, { signal: AbortSignal.timeout(5 * 60_000) })
+        if (!res.ok) throw new JobValidationError(`Could not read training footage from storage (${res.status})`)
+        const declared = Number(res.headers.get('content-length') ?? '0')
+        if (maxBytes && declared > maxBytes) throw new JobValidationError(footageTooLargeMessage(declared))
+        const buffer = Buffer.from(await res.arrayBuffer())
+        if (maxBytes && buffer.byteLength > maxBytes) throw new JobValidationError(footageTooLargeMessage(buffer.byteLength))
+        await r2Upload(r2Key, buffer, contentTypeForKey(key))
+        return buffer
+      },
+      { baseDelayMs: 300 },
+    ),
+  )
+}
+
+/** Reads the asset for this job: from R2 if already copied (recorded as `output_json.r2Key`),
+ *  otherwise copies it from Terminal AI storage into R2 first (see copyToR2). */
+async function readTrainingAsset(
+  job: JobRow,
+  key: string,
+  token: string,
+  maxBytes?: number,
+): Promise<{ buffer: Buffer; r2Key: string }> {
+  const existingR2Key = job.output_json.r2Key as string | undefined
+  if (existingR2Key) {
+    const buffer = await step('Reading footage from backup storage', () => withRetry(() => r2Download(existingR2Key)))
+    return { buffer, r2Key: existingR2Key }
+  }
+  const r2Key = `onboarding/${job.viewer_id}/${job.id}/${key.split('/').pop()}`
+  const buffer = await copyToR2(key, r2Key, token, maxBytes)
+  await dbUpdate<JobRow>('jobs', job.id, { output_json: { ...job.output_json, r2Key } }, token)
+  return { buffer, r2Key }
 }
 
 export async function createOnboardingJobs(
@@ -102,7 +155,9 @@ export async function createOnboardingJobs(
   await runVoiceCloneTraining(voiceJob, voice, viewer)
 
   const jobs = [await dbGet<JobRow>('jobs', avatarJob.id, token), await dbGet<JobRow>('jobs', voiceJob.id, token)]
-  return { avatar, voice, jobs }
+  const freshAvatar = await dbGet<AvatarRow>('avatars', avatar.id, token)
+  const freshVoice = await dbGet<VoiceRow>('voices', voice.id, token)
+  return { avatar: freshAvatar, voice: freshVoice, jobs }
 }
 
 /** Re-runs HeyGen training for an existing avatar (used by the failed-avatar retry route). */
@@ -116,43 +171,32 @@ async function runAvatarTraining(job: JobRow, avatar: AvatarRow, viewer: Viewer)
   try {
     const key = avatar.training_video_key
     if (!key) throw new JobValidationError('Missing training video upload')
-    const { url } = await getPresignedDownloadUrl(key, token)
-    // HeyGen's render network CANNOT reach our platform subdomain, so any file URL on our
-    // own origin fails with "Could not download the file". Instead, fetch the footage
-    // container-side — the platform presigned URL IS reachable from inside the container
-    // (the voice clone downloads its sample the same way) — and push the bytes to HeyGen's
-    // OWN asset store. HeyGen then downloads nothing from us. This mirrors the video-gen
-    // audio path (also HeyGen-hosted), which is why that path never hit this error.
     let created
     if (isMockMode(token)) {
+      const { url } = await getPresignedDownloadUrl(key, token)
       created = await heygen.createAvatar({ type: 'url', url }, viewerId, token)
     } else {
-      const buffer = await step('Downloading training footage from storage', async () => {
-        const res = await fetch(url, { signal: AbortSignal.timeout(5 * 60_000) })
-        if (!res.ok) throw new JobValidationError(`Could not read training footage from storage (${res.status})`)
-        const declared = Number(res.headers.get('content-length') ?? '0')
-        if (declared > HEYGEN_ASSET_MAX_BYTES) throw new JobValidationError(footageTooLargeMessage(declared))
-        return Buffer.from(await res.arrayBuffer())
-      })
-      if (buffer.byteLength > HEYGEN_ASSET_MAX_BYTES) throw new JobValidationError(footageTooLargeMessage(buffer.byteLength))
+      const fresh = await dbGet<JobRow>('jobs', job.id, token)
+      const { buffer } = await readTrainingAsset(fresh, key, token, HEYGEN_ASSET_MAX_BYTES)
       const contentType = key.toLowerCase().endsWith('.webm') ? 'video/webm' : 'video/mp4'
       const asset = await step('Uploading footage to HeyGen', () =>
-        heygen.uploadAsset(buffer, contentType, 'training.mp4', viewerId, token),
+        withRetry(() => heygen.uploadAsset(buffer, contentType, 'training.mp4', viewerId, token)),
       )
       created = await step('Creating HeyGen avatar', () =>
-        heygen.createAvatar({ type: 'asset_id', asset_id: asset.assetId }, viewerId, token),
+        withRetry(() => heygen.createAvatar({ type: 'asset_id', asset_id: asset.assetId }, viewerId, token)),
       )
     }
     await dbUpdate<AvatarRow>('avatars', avatar.id, { heygen_avatar_id: created.avatarId }, token)
     // Group id lives in the job's output_json — the live DB predates the avatars-table
     // columns for it and the platform does not apply ALTER migrations (dev ask filed).
+    const currentJob = await dbGet<JobRow>('jobs', job.id, token)
     await dbUpdate<JobRow>(
       'jobs',
       job.id,
       {
         status: 'processing',
         provider_job_id: created.avatarId,
-        output_json: { ...job.output_json, heygenGroupId: created.groupId ?? null },
+        output_json: { ...currentJob.output_json, heygenGroupId: created.groupId ?? null },
       },
       token,
     )
@@ -213,16 +257,20 @@ async function runVoiceCloneTraining(job: JobRow, voice: VoiceRow, viewer: Viewe
   try {
     const key = voice.sample_key
     if (!key) throw new JobValidationError('Missing voice sample upload')
-    const { url } = await getPresignedDownloadUrl(key, token)
-    // The Fish Audio TTS clone (used by "Generate from script") is the required step.
-    // Kits.ai does NOT support programmatic voice training (web-app only) — its
-    // registration is best-effort: on failure the voice is still marked ready with
-    // kits_voice_id null, and the voice-swap path degrades cleanly (generation.ts
-    // rejects swap for voices without a Kits target). The owner can train the voice at
-    // app.kits.ai and backfill the numeric model id into voices.kits_voice_id.
-    const fishVoiceId = await fish.cloneVoice(url, voice.name, viewerId, token)
+    let fishVoiceId: string
+    if (isMockMode(token)) {
+      const { url } = await getPresignedDownloadUrl(key, token)
+      fishVoiceId = await fish.cloneVoice(url, voice.name, viewerId, token)
+    } else {
+      const fresh = await dbGet<JobRow>('jobs', job.id, token)
+      const { buffer } = await readTrainingAsset(fresh, key, token)
+      fishVoiceId = await step('Cloning voice with Fish Audio', () =>
+        withRetry(() => fish.cloneVoiceFromBuffer(buffer, voice.name, viewerId, token)),
+      )
+    }
     let kitsVoiceId: string | null = null
     try {
+      const { url } = await getPresignedDownloadUrl(key, token)
       kitsVoiceId = await kits.createTargetVoice(url, voice.name, viewerId, token)
     } catch (kitsErr) {
       logger.warn({
@@ -234,7 +282,7 @@ async function runVoiceCloneTraining(job: JobRow, voice: VoiceRow, viewer: Viewe
     await dbUpdate<VoiceRow>('voices', voice.id, { fish_voice_id: fishVoiceId, kits_voice_id: kitsVoiceId, status: 'ready' }, token)
     await markJobReady({ ...job, status: 'processing' }, { fishVoiceId, kitsVoiceId }, token)
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
+    const message = err instanceof JobValidationError ? err.message : describeError(err)
     await failJob(job, token, message)
     await dbUpdate<VoiceRow>('voices', voice.id, { status: 'failed', error: message }, token)
   }
