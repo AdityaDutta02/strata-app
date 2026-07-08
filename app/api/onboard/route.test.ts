@@ -31,14 +31,18 @@ interface DbTestModule {
 
 const VIEWER = 'viewer-1'
 
-function makeRequest(): Request {
+function makeRequest(overrides: { avatarUploadKey?: string; voiceUploadKey?: string } = {}): Request {
   return new Request('http://localhost/api/onboard', {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
       'x-embed-token': `header.${Buffer.from(JSON.stringify({ userId: VIEWER })).toString('base64')}.sig`,
     },
-    body: JSON.stringify({ name: 'New Presenter', avatarUploadKey: 'uploads/v.mp4', voiceUploadKey: 'uploads/a.wav' }),
+    body: JSON.stringify({
+      name: 'New Presenter',
+      avatarUploadKey: overrides.avatarUploadKey ?? `training/${VIEWER}/v.mp4`,
+      voiceUploadKey: overrides.voiceUploadKey ?? `training/${VIEWER}/a.wav`,
+    }),
   })
 }
 
@@ -58,5 +62,19 @@ describe('POST /api/onboard — one-avatar cap', () => {
     expect(res.status).toBe(409)
     const body = (await res.json()) as { error: string }
     expect(body.error).toMatch(/Remove your current avatar/)
+  })
+})
+
+describe('POST /api/onboard — upload key ownership', () => {
+  it('rejects with 403 when avatarUploadKey belongs to a different viewer', async () => {
+    const res = await POST(makeRequest({ avatarUploadKey: 'training/someone-else/v.mp4' }))
+    expect(res.status).toBe(403)
+    const body = (await res.json()) as { error: string }
+    expect(body.error).toMatch(/does not belong to this viewer/)
+  })
+
+  it('rejects with 403 when voiceUploadKey belongs to a different viewer', async () => {
+    const res = await POST(makeRequest({ voiceUploadKey: 'training/someone-else/a.wav' }))
+    expect(res.status).toBe(403)
   })
 })

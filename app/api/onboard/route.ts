@@ -21,6 +21,14 @@ export async function POST(request: Request): Promise<NextResponse> {
   try {
     const body = onboardSchema.parse(await request.json())
 
+    // Uploads are presigned per-viewer (training/{viewerId}/...) at /api/uploads/r2-presign.
+    // Reject any key that doesn't belong to this viewer — otherwise a caller could pass
+    // someone else's key and have our server read + train on their private footage (IDOR).
+    const prefix = `training/${viewer.viewerId}/`
+    if (!body.avatarUploadKey.startsWith(prefix) || !body.voiceUploadKey.startsWith(prefix)) {
+      return NextResponse.json({ error: 'Upload key does not belong to this viewer' }, { status: 403 })
+    }
+
     const existingAvatars = await dbList<AvatarRow>('avatars', { viewer_id: viewer.viewerId }, viewer.token)
     for (const existing of existingAvatars) {
       const job = await latestJob('avatar_create', 'avatarId', existing.id, viewer.viewerId, viewer.token)
