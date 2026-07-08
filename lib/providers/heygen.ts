@@ -80,6 +80,13 @@ export interface HeygenCreatedAvatar {
   groupId?: string
 }
 
+/** The training-footage source handed to HeyGen. Prefer `asset_id` (HeyGen-hosted, uploaded
+ *  via POST /v3/assets) — HeyGen's render network cannot reach our platform subdomain, so a
+ *  `url` pointing at our own origin fails with "Could not download the file". */
+export type HeygenFileInput =
+  | { type: 'url'; url: string }
+  | { type: 'asset_id'; asset_id: string }
+
 export interface HeygenVideoStatus {
   status: 'processing' | 'ready' | 'failed'
   videoUrl?: string
@@ -97,10 +104,11 @@ function normalizeStatus(raw: string | undefined): NormalizedStatus {
 
 /** Kicks off digital-twin avatar creation from an uploaded training video. Returns HeyGen's
  *  avatar look id (poll with avatarStatus) plus the avatar group id (for the consent flow). */
-export async function createAvatar(videoUrl: string, viewerId: string, token: string): Promise<HeygenCreatedAvatar> {
-  await logProviderCall(viewerId, 'heygen.createAvatar', { videoUrl }, token)
+export async function createAvatar(file: HeygenFileInput, viewerId: string, token: string): Promise<HeygenCreatedAvatar> {
+  await logProviderCall(viewerId, 'heygen.createAvatar', { file }, token)
   if (isMockMode(token)) {
-    const suffix = Buffer.from(videoUrl).toString('hex').slice(0, 12)
+    const seed = file.type === 'url' ? file.url : file.asset_id
+    const suffix = Buffer.from(seed).toString('hex').slice(0, 12)
     return { avatarId: `mock-avatar-${suffix}`, groupId: `mock-group-${suffix}` }
   }
   const res = await fetch(`${BASE}/avatars`, {
@@ -109,7 +117,7 @@ export async function createAvatar(videoUrl: string, viewerId: string, token: st
     body: JSON.stringify({
       type: 'digital_twin',
       name: `strata-${viewerId}`,
-      file: { type: 'url', url: videoUrl },
+      file,
     }),
     signal: providerTimeout(),
   })

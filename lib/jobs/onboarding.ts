@@ -9,7 +9,6 @@ import * as heygen from '../providers/heygen'
 import * as fish from '../providers/fish'
 import * as kits from '../providers/kits'
 import { logger } from '../logger'
-import { publicAssetUrl } from '../public-asset'
 import { isMockMode } from '../providers/mock'
 import { JobValidationError, failJob, markJobReady, scheduleWatchdog } from './shared'
 import type { AvatarRow, JobRow, VoiceRow, WorkspaceRow } from '../types'
@@ -18,6 +17,14 @@ export interface OnboardBody {
   name: string
   avatarUploadKey: string
   voiceUploadKey: string
+}
+
+// HeyGen's POST /v3/assets cap. Footage is uploaded to HeyGen's own store (see runAvatarTraining).
+const HEYGEN_ASSET_MAX_BYTES = 32 * 1024 * 1024
+
+function footageTooLargeMessage(bytes: number): string {
+  const mb = Math.ceil(bytes / (1024 * 1024))
+  return `Training footage is ${mb}MB. HeyGen accepts up to 32MB — please upload a shorter clip (a 30–90 second 720p clip is ideal for a digital twin).`
 }
 
 export async function createOnboardingJobs(
@@ -86,12 +93,27 @@ async function runAvatarTraining(job: JobRow, avatar: AvatarRow, viewer: Viewer)
   try {
     const key = avatar.training_video_key
     if (!key) throw new JobValidationError('Missing training video upload')
-    // HeyGen fetches the footage from ITS servers — the platform's presigned URLs are not
-    // reliably reachable externally, so hand HeyGen a signed URL on our own public origin
-    // that streams the presigned upstream (minted now, while the viewer token is valid).
     const { url } = await getPresignedDownloadUrl(key, token)
-    const footageUrl = isMockMode(token) ? url : publicAssetUrl(url, 14 * 60, 'training.mp4')
-    const created = await heygen.createAvatar(footageUrl, viewerId, token)
+    // HeyGen's render network CANNOT reach our platform subdomain, so any file URL on our
+    // own origin fails with "Could not download the file". Instead, fetch the footage
+    // container-side — the platform presigned URL IS reachable from inside the container
+    // (the voice clone downloads its sample the same way) — and push the bytes to HeyGen's
+    // OWN asset store. HeyGen then downloads nothing from us. This mirrors the video-gen
+    // audio path (also HeyGen-hosted), which is why that path never hit this error.
+    let created
+    if (isMockMode(token)) {
+      created = await heygen.createAvatar({ type: 'url', url }, viewerId, token)
+    } else {
+      const res = await fetch(url)
+      if (!res.ok) throw new JobValidationError(`Could not read training footage from storage (${res.status})`)
+      const declared = Number(res.headers.get('content-length') ?? '0')
+      if (declared > HEYGEN_ASSET_MAX_BYTES) throw new JobValidationError(footageTooLargeMessage(declared))
+      const buffer = Buffer.from(await res.arrayBuffer())
+      if (buffer.byteLength > HEYGEN_ASSET_MAX_BYTES) throw new JobValidationError(footageTooLargeMessage(buffer.byteLength))
+      const contentType = key.toLowerCase().endsWith('.webm') ? 'video/webm' : 'video/mp4'
+      const asset = await heygen.uploadAsset(buffer, contentType, 'training.mp4', viewerId, token)
+      created = await heygen.createAvatar({ type: 'asset_id', asset_id: asset.assetId }, viewerId, token)
+    }
     await dbUpdate<AvatarRow>('avatars', avatar.id, { heygen_avatar_id: created.avatarId }, token)
     // Group id lives in the job's output_json — the live DB predates the avatars-table
     // columns for it and the platform does not apply ALTER migrations (dev ask filed).
