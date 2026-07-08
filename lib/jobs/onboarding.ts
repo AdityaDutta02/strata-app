@@ -27,6 +27,29 @@ function footageTooLargeMessage(bytes: number): string {
   return `Training footage is ${mb}MB. HeyGen accepts up to 32MB — please upload a shorter clip (a 30–90 second 720p clip is ideal for a digital twin).`
 }
 
+// undici throws a bare `TypeError: fetch failed` and hides the real reason (ECONNRESET,
+// ENOTFOUND, timeout, TLS) in `.cause`. We have no runtime logs on this platform, so the
+// job's error text is our only telemetry — unwrap the cause so failures are diagnosable.
+function describeError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err)
+  const cause = (err as { cause?: unknown }).cause
+  let causeText = ''
+  if (cause instanceof Error) causeText = cause.message
+  else if (cause && typeof cause === 'object' && 'code' in cause) causeText = String((cause as { code: unknown }).code)
+  else if (typeof cause === 'string') causeText = cause
+  return causeText ? `${err.message} (${causeText})` : err.message
+}
+
+/** Runs a network step, re-throwing transport failures with a step label + unwrapped cause. */
+async function step<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn()
+  } catch (err) {
+    if (err instanceof JobValidationError) throw err
+    throw new JobValidationError(`${label} — ${describeError(err)}`)
+  }
+}
+
 export async function createOnboardingJobs(
   viewer: Viewer,
   body: OnboardBody,
@@ -104,15 +127,21 @@ async function runAvatarTraining(job: JobRow, avatar: AvatarRow, viewer: Viewer)
     if (isMockMode(token)) {
       created = await heygen.createAvatar({ type: 'url', url }, viewerId, token)
     } else {
-      const res = await fetch(url)
-      if (!res.ok) throw new JobValidationError(`Could not read training footage from storage (${res.status})`)
-      const declared = Number(res.headers.get('content-length') ?? '0')
-      if (declared > HEYGEN_ASSET_MAX_BYTES) throw new JobValidationError(footageTooLargeMessage(declared))
-      const buffer = Buffer.from(await res.arrayBuffer())
+      const buffer = await step('Downloading training footage from storage', async () => {
+        const res = await fetch(url, { signal: AbortSignal.timeout(5 * 60_000) })
+        if (!res.ok) throw new JobValidationError(`Could not read training footage from storage (${res.status})`)
+        const declared = Number(res.headers.get('content-length') ?? '0')
+        if (declared > HEYGEN_ASSET_MAX_BYTES) throw new JobValidationError(footageTooLargeMessage(declared))
+        return Buffer.from(await res.arrayBuffer())
+      })
       if (buffer.byteLength > HEYGEN_ASSET_MAX_BYTES) throw new JobValidationError(footageTooLargeMessage(buffer.byteLength))
       const contentType = key.toLowerCase().endsWith('.webm') ? 'video/webm' : 'video/mp4'
-      const asset = await heygen.uploadAsset(buffer, contentType, 'training.mp4', viewerId, token)
-      created = await heygen.createAvatar({ type: 'asset_id', asset_id: asset.assetId }, viewerId, token)
+      const asset = await step('Uploading footage to HeyGen', () =>
+        heygen.uploadAsset(buffer, contentType, 'training.mp4', viewerId, token),
+      )
+      created = await step('Creating HeyGen avatar', () =>
+        heygen.createAvatar({ type: 'asset_id', asset_id: asset.assetId }, viewerId, token),
+      )
     }
     await dbUpdate<AvatarRow>('avatars', avatar.id, { heygen_avatar_id: created.avatarId }, token)
     // Group id lives in the job's output_json — the live DB predates the avatars-table
@@ -129,7 +158,7 @@ async function runAvatarTraining(job: JobRow, avatar: AvatarRow, viewer: Viewer)
     )
     await scheduleWatchdog({ ...job, provider_job_id: created.avatarId }, token)
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
+    const message = err instanceof JobValidationError ? err.message : describeError(err)
     await failJob(job, token, message)
     await dbUpdate<AvatarRow>('avatars', avatar.id, { status: 'failed', error: message }, token)
   }

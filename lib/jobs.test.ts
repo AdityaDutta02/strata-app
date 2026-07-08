@@ -74,12 +74,14 @@ type VideoStatusResult = { status: 'processing' | 'ready' | 'failed'; videoUrl?:
 type AvatarStatusResult = { status: 'training' | 'ready' | 'failed'; error?: string }
 const heygenCreateVideo = vi.fn(async () => 'provider-video-1')
 const heygenVideoStatus = vi.fn(async (): Promise<VideoStatusResult> => ({ status: 'processing' }))
-const heygenCreateAvatar = vi.fn(async () => 'provider-avatar-1')
+const heygenCreateAvatar = vi.fn(async () => ({ avatarId: 'provider-avatar-1', groupId: 'provider-group-1' }))
+const heygenUploadAsset = vi.fn(async () => ({ assetId: 'provider-asset-1', url: 'https://files.heygen.ai/provider-asset-1.mp4' }))
 const heygenAvatarStatus = vi.fn(async (): Promise<AvatarStatusResult> => ({ status: 'training' }))
 vi.mock('./providers/heygen', () => ({
   createVideo: (...args: unknown[]) => heygenCreateVideo(...(args as [])),
   videoStatus: (...args: unknown[]) => heygenVideoStatus(...(args as [])),
   createAvatar: (...args: unknown[]) => heygenCreateAvatar(...(args as [])),
+  uploadAsset: (...args: unknown[]) => heygenUploadAsset(...(args as [])),
   avatarStatus: (...args: unknown[]) => heygenAvatarStatus(...(args as [])),
 }))
 
