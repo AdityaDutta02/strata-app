@@ -163,7 +163,18 @@ async function runAvatarTraining(job: JobRow, avatar: AvatarRow, viewer: Viewer)
 export async function pollAvatarJob(job: JobRow, token: string): Promise<boolean> {
   if (job.status !== 'processing' || !job.provider_job_id) return false
   const avatarId = job.input_json.avatarId as string | undefined
-  const status = await heygen.avatarStatus(job.provider_job_id, job.viewer_id, token)
+  let status
+  try {
+    status = await heygen.avatarStatus(job.provider_job_id, job.viewer_id, token)
+  } catch (err) {
+    // Without this, a status-check failure (bad id, transient HeyGen error) left the job
+    // silently stuck in "processing" forever — nothing else ever surfaced it, and this
+    // platform has no runtime logs to diagnose it from. Fail loudly instead.
+    const message = describeError(err)
+    await failJob(job, token, `Checking HeyGen avatar status — ${message}`)
+    if (avatarId) await dbUpdate<AvatarRow>('avatars', avatarId, { status: 'failed', error: `Checking HeyGen avatar status — ${message}` }, token)
+    return true
+  }
   if (status.status === 'training') {
     // pending_consent never dead-ends: request the approval URL once, store it on the
     // avatar row (surfaced in the UI) and email it to the owner best-effort. Polling
