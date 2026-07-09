@@ -21,6 +21,7 @@ import type {
   Asset,
   Avatar,
   EstimateResponse,
+  Job,
   Project,
   Stage,
   Transcript,
@@ -361,8 +362,24 @@ function WorkspaceInner({
     window.open(url, "_blank", "noopener,noreferrer");
   }
 
-  async function handleRetryJob(): Promise<void> {
-    await handleGenerate();
+  async function handleRetryJob(job: Job): Promise<void> {
+    if (job.type !== "video_gen") {
+      await handleGenerate();
+      return;
+    }
+    try {
+      setGenerating(true);
+      setGenerateError(null);
+      await api.projects.retryVideo(token, project.id);
+      const updated = await api.projects.get(token, project.id);
+      setProject(updated);
+      await refreshJobs();
+      await refreshWallet();
+    } catch (e) {
+      setGenerateError(e instanceof ApiError ? e.message : "Retry failed");
+    } finally {
+      setGenerating(false);
+    }
   }
 
   const videoAsset = assets.find((a) => a.kind === "video") ?? null;
@@ -433,7 +450,7 @@ function WorkspaceInner({
               generating={generating}
               generateError={generateError}
               onGenerate={() => void handleGenerate()}
-              onRetryJob={() => void handleRetryJob()}
+              onRetryJob={(job) => void handleRetryJob(job)}
             />
           )}
           {activeStage === "render" && (

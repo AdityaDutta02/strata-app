@@ -14,8 +14,32 @@ import * as groq from '../providers/groq'
 import { findSources } from '../providers/research'
 import { isMockMode, mockAudioBuffer, mockVideoBuffer } from '../providers/mock'
 import { providerTimeout } from '../providers/provider-error'
+import { withRetry } from '../retry'
 import { JobValidationError, downloadBytes, failJob, markJobReady, scheduleWatchdog, storeAsset } from './shared'
 import type { AssetRow, AvatarRow, JobRow, JobType, NotesLine, ProjectRow, VoiceRow } from '../types'
+
+// undici throws a bare `TypeError: fetch failed` and hides the real reason in `.cause` —
+// same unwrapping as the onboarding pipeline, so failures here are diagnosable too.
+function describeError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err)
+  const cause = (err as { cause?: unknown }).cause
+  let causeText = ''
+  if (cause instanceof Error) causeText = cause.message
+  else if (cause && typeof cause === 'object' && 'code' in cause) causeText = String((cause as { code: unknown }).code)
+  else if (typeof cause === 'string') causeText = cause
+  const attempts = (err as { attempts?: number }).attempts
+  const attemptsText = attempts ? ` — failed after ${attempts} attempt${attempts === 1 ? '' : 's'}` : ''
+  return causeText ? `${err.message}${attemptsText} (${causeText})` : `${err.message}${attemptsText}`
+}
+
+async function step<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn()
+  } catch (err) {
+    if (err instanceof JobValidationError) throw err
+    throw new JobValidationError(`${label} — ${describeError(err)}`)
+  }
+}
 
 export interface GenerateBody {
   recordingKey?: string
@@ -120,46 +144,99 @@ async function runVoiceJob(job: JobRow, project: ProjectRow, viewer: Viewer): Pr
       token,
     })
     await markJobReady(job, { audioAssetId: audioAsset.id }, token)
-    await startVideoJob(project, audioAsset, viewer)
+    const [videoJob] = await dbList<JobRow>('jobs', { project_id: project.id, type: 'video_gen' }, token)
+    if (videoJob) await startVideoJob(project, videoJob, audioBuffer, viewer)
   } catch (err) {
     await failJob(job, token, err instanceof Error ? err.message : String(err), { cascadeProject: true })
   }
 }
 
-async function startVideoJob(project: ProjectRow, audioAsset: AssetRow, viewer: Viewer): Promise<void> {
+/** Starts (or retries) HeyGen video generation for `videoJob`, given the voiceover bytes
+ *  directly — never re-downloads them from Terminal AI storage, which is why this hop used
+ *  to fail with an unrecoverable "fetch failed" (same platform storage flakiness the
+ *  onboarding pipeline hit). */
+async function startVideoJob(project: ProjectRow, videoJob: JobRow, audioBuffer: Buffer, viewer: Viewer): Promise<void> {
   const { token, viewerId } = viewer
-  const [videoJob] = await dbList<JobRow>('jobs', { project_id: project.id, type: 'video_gen' }, token)
-  if (!videoJob) return
   const avatar = project.avatar_id ? await dbGet<AvatarRow>('avatars', project.avatar_id, token).catch(() => null) : null
   if (!isMockMode(token) && !avatar?.heygen_avatar_id) {
     await failJob(videoJob, token, 'Selected avatar has no trained HeyGen avatar id', { cascadeProject: true })
     return
   }
   try {
-    // HeyGen's workers can't reliably fetch the platform's presigned URLs, so the audio
-    // is pushed to HeyGen's own asset store (≤32MB — ample for TTS mp3) and referenced
-    // by its HeyGen-hosted URL.
-    const { url: audioUrl } = await getPresignedDownloadUrl(audioAsset.storage_key, token)
-    let heygenAudioUrl = audioUrl
+    let heygenAudioUrl = 'mock://audio'
     if (!isMockMode(token)) {
-      const audioRes = await fetch(audioUrl, { signal: providerTimeout() })
-      if (!audioRes.ok) throw new Error(`failed to read voiceover audio: ${audioRes.status}`)
-      const audioBuffer = Buffer.from(await audioRes.arrayBuffer())
-      const asset = await heygen.uploadAsset(audioBuffer, 'audio/mpeg', 'voiceover.mp3', viewerId, token)
+      const asset = await step('Uploading voiceover to HeyGen', () =>
+        withRetry(() => heygen.uploadAsset(audioBuffer, 'audio/mpeg', 'voiceover.mp3', viewerId, token)),
+      )
       heygenAudioUrl = asset.url
     }
-    const providerJobId = await heygen.createVideo(
-      avatar?.heygen_avatar_id ?? 'mock',
-      heygenAudioUrl,
-      viewerId,
-      token,
-      videoJob.input_json.resolution === '1080p' ? '1080p' : '720p',
+    const providerJobId = await step('Starting HeyGen video generation', () =>
+      withRetry(() =>
+        heygen.createVideo(
+          avatar?.heygen_avatar_id ?? 'mock',
+          heygenAudioUrl,
+          viewerId,
+          token,
+          videoJob.input_json.resolution === '1080p' ? '1080p' : '720p',
+        ),
+      ),
     )
     await dbUpdate<JobRow>('jobs', videoJob.id, { status: 'processing', provider_job_id: providerJobId }, token)
     await scheduleWatchdog({ ...videoJob, status: 'processing', provider_job_id: providerJobId }, token)
   } catch (err) {
-    await failJob(videoJob, token, err instanceof Error ? err.message : String(err), { cascadeProject: true })
+    const message = err instanceof JobValidationError ? err.message : describeError(err)
+    await failJob(videoJob, token, message, { cascadeProject: true })
   }
+}
+
+/** Retries a failed video_gen job using the project's already-generated voiceover — no need
+ *  to redo TTS. Re-reserves the failed job's credits (refunded on the earlier failure) into
+ *  a fresh job row, mirroring the avatar-training retry pattern. */
+export async function retryVideoGeneration(project: ProjectRow, viewer: Viewer): Promise<void> {
+  const { token, viewerId } = viewer
+  const videoJobs = await dbList<JobRow>('jobs', { project_id: project.id, type: 'video_gen' }, token)
+  const failedVideoJob = videoJobs
+    .filter((j) => j.status === 'failed')
+    .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0]
+  if (!failedVideoJob) throw new JobValidationError('No failed video job to retry')
+
+  const voiceJobs = await dbList<JobRow>('jobs', { project_id: project.id }, token)
+  const voiceJob = voiceJobs
+    .filter((j) => (j.type === 'voice_gen' || j.type === 'voice_swap') && j.status === 'ready')
+    .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0]
+  const audioAssetId = voiceJob?.output_json.audioAssetId as string | undefined
+  if (!audioAssetId) throw new JobValidationError('No completed voiceover to retry video generation from')
+  const audioAsset = await dbGet<AssetRow>('assets', audioAssetId, token)
+
+  const audioBuffer = await step('Reading voiceover from storage', () =>
+    withRetry(async () => {
+      const { url } = await getPresignedDownloadUrl(audioAsset.storage_key, token)
+      const res = await fetch(url, { signal: providerTimeout() })
+      if (!res.ok) throw new Error(`failed to read voiceover audio: ${res.status}`)
+      return Buffer.from(await res.arrayBuffer())
+    }),
+  )
+
+  if (failedVideoJob.credits_reserved > 0) {
+    const workspace = await bootstrapWorkspace(viewerId, token)
+    await reserveCredits(workspace, failedVideoJob.credits_reserved, token, { note: `retry video generation for project ${project.id}` })
+  }
+  const newVideoJob = await dbInsert<JobRow>(
+    'jobs',
+    {
+      viewer_id: viewerId,
+      project_id: project.id,
+      type: 'video_gen',
+      status: 'queued',
+      input_json: failedVideoJob.input_json,
+      output_json: {},
+      credits_reserved: failedVideoJob.credits_reserved,
+      credits_charged: 0,
+    },
+    token,
+  )
+  await dbUpdate<ProjectRow>('projects', project.id, { status: 'processing' }, token)
+  await startVideoJob(project, newVideoJob, audioBuffer, viewer)
 }
 
 export async function pollVideoJob(job: JobRow, token: string): Promise<boolean> {

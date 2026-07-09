@@ -92,6 +92,9 @@ export const api = {
         method: "POST",
         body: JSON.stringify(body),
       }),
+    retryVideo: async (token: string, id: string): Promise<void> => {
+      await request<{ ok: boolean }>(token, `/api/projects/${id}/generate/retry-video`, { method: "POST" });
+    },
   },
 
   estimate: (token: string, body: { script: string; format: Format; mode: VoiceMode }): Promise<EstimateResponse> =>
