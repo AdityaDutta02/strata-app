@@ -60,7 +60,7 @@ vi.mock('../storage-r2', () => ({
 }))
 
 const heygenUploadAsset = vi.fn(async (_buffer: Buffer, ..._rest: unknown[]) => ({ assetId: 'asset-1', url: 'https://files.heygen.ai/asset-1.mp4' }))
-const heygenCreateAvatar = vi.fn(async () => ({ avatarId: 'heygen-avatar-1', groupId: 'group-1' }))
+const heygenCreateAvatar = vi.fn(async () => ({ avatarId: 'heygen-avatar-1', groupId: 'group-1', needsConsent: false }))
 vi.mock('../providers/heygen', () => ({
   uploadAsset: (...args: unknown[]) => heygenUploadAsset(...(args as [Buffer])),
   createAvatar: (...args: unknown[]) => heygenCreateAvatar(...(args as [])),
@@ -105,7 +105,7 @@ describe('runAvatarTraining (via createOnboardingJobs)', () => {
       avatarUploadKey: 'training/viewer-onboarding-test/video.mp4',
       voiceUploadKey: 'training/viewer-onboarding-test/audio.wav',
     })
-    expect(avatar.status).toBe('training')
+    expect(avatar.status).toBe('ready')
     expect(r2DownloadMock).toHaveBeenCalledWith('training/viewer-onboarding-test/video.mp4')
     expect(heygenUploadAsset).toHaveBeenCalledTimes(1)
     expect(heygenUploadAsset.mock.calls[0]![0]).toEqual(Buffer.from('bytes-for-training/viewer-onboarding-test/video.mp4'))
@@ -150,7 +150,7 @@ describe('runAvatarTraining (via createOnboardingJobs)', () => {
       avatarUploadKey: 'training/viewer-onboarding-test/video.mp4',
       voiceUploadKey: 'training/viewer-onboarding-test/audio.wav',
     })
-    expect(avatar.status).toBe('training')
+    expect(avatar.status).toBe('ready')
     expect(videoAttempts).toBe(2)
   })
 

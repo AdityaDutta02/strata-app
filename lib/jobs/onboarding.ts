@@ -142,7 +142,7 @@ async function runAvatarTraining(job: JobRow, avatar: AvatarRow, viewer: Viewer)
     // Group id lives in the job's output_json — the live DB predates the avatars-table
     // columns for it and the platform does not apply ALTER migrations (dev ask filed).
     const currentJob = await dbGet<JobRow>('jobs', job.id, token)
-    await dbUpdate<JobRow>(
+    const updatedJob = await dbUpdate<JobRow>(
       'jobs',
       job.id,
       {
@@ -152,7 +152,15 @@ async function runAvatarTraining(job: JobRow, avatar: AvatarRow, viewer: Viewer)
       },
       token,
     )
-    await scheduleWatchdog({ ...job, provider_job_id: created.avatarId }, token)
+    if (!created.needsConsent) {
+      // HeyGen's create-avatar response is the finished look, not a "training started"
+      // acknowledgment — there is no further async step to wait for when consent isn't
+      // required, so mark ready immediately instead of polling a status that never resolves.
+      await markJobReady(updatedJob, {}, token)
+      await dbUpdate<AvatarRow>('avatars', avatar.id, { status: 'ready' }, token)
+    } else {
+      await scheduleWatchdog({ ...updatedJob, provider_job_id: created.avatarId }, token)
+    }
   } catch (err) {
     const message = err instanceof JobValidationError ? err.message : describeError(err)
     await failJob(job, token, message)

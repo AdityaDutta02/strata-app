@@ -78,6 +78,9 @@ export interface HeygenCreatedAvatar {
   avatarId: string
   /** Avatar group id — needed for the consent endpoint. May be absent in mock mode. */
   groupId?: string
+  /** True only if HeyGen's create-avatar response reports a non-null consent_status — most
+   *  digital twins don't require it, in which case the look is usable immediately. */
+  needsConsent: boolean
 }
 
 /** The training-footage source handed to HeyGen. Prefer `asset_id` (HeyGen-hosted, uploaded
@@ -109,7 +112,7 @@ export async function createAvatar(file: HeygenFileInput, viewerId: string, toke
   if (isMockMode(token)) {
     const seed = file.type === 'url' ? file.url : file.asset_id
     const suffix = Buffer.from(seed).toString('hex').slice(0, 12)
-    return { avatarId: `mock-avatar-${suffix}`, groupId: `mock-group-${suffix}` }
+    return { avatarId: `mock-avatar-${suffix}`, groupId: `mock-group-${suffix}`, needsConsent: false }
   }
   const res = await fetch(`${BASE}/avatars`, {
     method: 'POST',
@@ -125,14 +128,19 @@ export async function createAvatar(file: HeygenFileInput, viewerId: string, toke
   const body = (await res.json()) as {
     data?: {
       avatar_item?: { id?: string; avatar_group_id?: string; group_id?: string }
-      avatar_group?: { id?: string }
+      avatar_group?: { id?: string; consent_status?: string | null }
     }
   }
   const avatarId = body.data?.avatar_item?.id
   if (!avatarId) throw new ProviderError('heygen', 'createAvatar: missing avatar id in response')
   const groupId =
     body.data?.avatar_item?.avatar_group_id ?? body.data?.avatar_item?.group_id ?? body.data?.avatar_group?.id
-  return { avatarId, groupId }
+  // Per HeyGen's docs, POST /v3/avatars returns the finished look immediately — there is no
+  // async "training" step in the response. The only real wait is consent (digital twins may
+  // require it); consent_status is null/absent when none is needed, in which case the avatar
+  // is usable right away.
+  const consentStatus = body.data?.avatar_group?.consent_status ?? null
+  return { avatarId, groupId, needsConsent: Boolean(consentStatus) }
 }
 
 /** Requests the consent-approval URL for an avatar group stuck in pending_consent. The person
