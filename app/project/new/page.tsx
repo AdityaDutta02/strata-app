@@ -13,9 +13,9 @@ import type { Format } from "@/app/_lib/types";
 // 2 steps (title, format) that map directly onto POST /api/projects, keeping the same
 // progress-bar / card visual language.
 
-const FORMATS: { id: Format; label: string; sub: string; grad: string }[] = [
-  { id: "short", label: "Short", sub: "< 60 seconds", grad: "var(--poster-grad-0)" },
-  { id: "long", label: "Long", sub: "~10 minutes", grad: "var(--poster-grad-3)" },
+const FORMATS: { id: Format; label: string; sub: string; grad: string; aspect: string }[] = [
+  { id: "vertical", label: "Vertical", sub: "9:16 — Reels, Shorts, TikTok", grad: "var(--poster-grad-0)", aspect: "aspect-[9/16] w-9" },
+  { id: "horizontal", label: "Horizontal", sub: "16:9 — YouTube, presentations", grad: "var(--poster-grad-3)", aspect: "aspect-[16/9] w-16" },
 ];
 
 function ProgressBar({ step, total }: { step: number; total: number }) {
@@ -145,7 +145,7 @@ export default function CreateFlow() {
                 <h1 className="mt-2 text-[42px] font-semibold leading-[1.05] tracking-tight text-fg-primary">
                   Pick a format
                 </h1>
-                <p className="mt-2 text-sm text-fg-secondary">Short or long-form — this sets the credit rate.</p>
+                <p className="mt-2 text-sm text-fg-secondary">Choose the orientation for this video.</p>
               </div>
               <div className="flex flex-wrap gap-3">
                 {FORMATS.map((f) => {
@@ -161,7 +161,7 @@ export default function CreateFlow() {
                           : "border-line-muted bg-surface-card hover:border-line-default hover:bg-surface-subtle",
                       ].join(" ")}
                     >
-                      <div className="relative flex h-16 w-9 items-center justify-center rounded-sm" style={{ background: f.grad }}>
+                      <div className={`relative flex h-16 items-center justify-center rounded-sm ${f.aspect}`} style={{ background: f.grad }}>
                         {selected && (
                           <div className="absolute inset-0 flex items-center justify-center">
                             <div className="flex h-5 w-5 items-center justify-center rounded-full bg-white/90">

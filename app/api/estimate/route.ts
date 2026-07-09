@@ -6,7 +6,7 @@ import { errorResponse } from '../../../lib/api-helpers'
 
 const estimateSchema = z.object({
   script: z.string().trim().max(200_000),
-  format: z.enum(['short', 'long']).default('short'),
+  format: z.enum(['vertical', 'horizontal']).default('vertical'),
   mode: z.enum(['tts', 'swap']).default('tts'),
 })
 

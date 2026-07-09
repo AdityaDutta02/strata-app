@@ -87,7 +87,12 @@ export const api = {
     remove: async (token: string, id: string): Promise<void> => {
       await request<{ ok: boolean }>(token, `/api/projects/${id}`, { method: "DELETE" });
     },
-    generate: (token: string, id: string, body: { recordingKey?: string } = {}): Promise<GenerateResponse> =>
+    generateVoice: (token: string, id: string, body: { recordingKey?: string } = {}): Promise<{ job: Job }> =>
+      request<{ job: Job }>(token, `/api/projects/${id}/generate-voice`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    generate: (token: string, id: string, body: { resolution?: "720p" | "1080p" } = {}): Promise<GenerateResponse> =>
       request<GenerateResponse>(token, `/api/projects/${id}/generate`, {
         method: "POST",
         body: JSON.stringify(body),

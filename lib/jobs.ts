@@ -8,8 +8,8 @@
 //   lib/jobs/onboarding.ts  — standalone chain: avatar_create + voice_clone
 //   lib/jobs/tick.ts        — the pump that advances `processing` jobs
 export { JobValidationError } from './jobs/shared'
-export { createGeneration, retryVideoGeneration } from './jobs/generation'
-export type { GenerateBody } from './jobs/generation'
+export { createVoiceGeneration, createVideoGeneration, retryVideoGeneration } from './jobs/generation'
+export type { GenerateVoiceBody, GenerateVideoBody } from './jobs/generation'
 export { createOnboardingJobs } from './jobs/onboarding'
 export type { OnboardBody } from './jobs/onboarding'
 export { tick } from './jobs/tick'

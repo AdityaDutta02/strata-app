@@ -68,6 +68,12 @@ export default function Dashboard() {
 
   const processing = projects.filter((p) => p.status === "processing").length;
 
+  async function handleDeleteProject(id: string): Promise<void> {
+    if (!token) return;
+    await api.projects.remove(token, id);
+    setProjects((prev) => prev.filter((p) => p.id !== id));
+  }
+
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
     return projects
@@ -166,7 +172,7 @@ export default function Dashboard() {
       ) : visible.length > 0 ? (
         <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {visible.map((p) => (
-            <ProjectCard key={p.id} project={p} />
+            <ProjectCard key={p.id} project={p} onDelete={() => void handleDeleteProject(p.id)} />
           ))}
         </div>
       ) : (

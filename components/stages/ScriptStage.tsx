@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useRef, useState } from "react";
-import { Check, Upload } from "lucide-react";
+import { ArrowRight, Check, Upload } from "lucide-react";
+import Button from "../Button";
 import StageHeader from "./StageHeader";
 import type { EstimateResponse, Format, VoiceMode } from "@/app/_lib/types";
 
@@ -12,12 +13,13 @@ interface ScriptStageProps {
   estimate: EstimateResponse | null;
   estimating: boolean;
   saving: boolean;
+  onContinue: () => void;
 }
 
 // Script stage repurposed per docs/BUILD-SPEC-MVP.md: upload/paste ONLY — no
 // AI generate/rewrite. Textarea + .txt/.md file upload, live word count → est
 // duration → est credit cost (server /api/estimate).
-export default function ScriptStage({ script, estimate, estimating, saving, onChangeScript }: ScriptStageProps) {
+export default function ScriptStage({ script, estimate, estimating, saving, onChangeScript, onContinue }: ScriptStageProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [fileError, setFileError] = useState<string | null>(null);
 
@@ -104,6 +106,12 @@ export default function ScriptStage({ script, estimate, estimating, saving, onCh
             ? `≈${estimate.minutes.toFixed(1)} min · ≈${estimate.credits} cr`
             : "—"}
         </span>
+      </div>
+
+      <div className="flex justify-end">
+        <Button variant="primary" icon={ArrowRight} disabled={script.trim().length === 0} onClick={onContinue}>
+          Continue to Voice
+        </Button>
       </div>
     </div>
   );

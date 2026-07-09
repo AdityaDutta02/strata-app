@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // --- Fake db.ts (in-memory) -------------------------------------------------
 vi.mock('./db', () => {
@@ -119,7 +119,7 @@ vi.mock('./providers/research', () => ({
 
 import { dbGet, dbList } from './db'
 import { bootstrapWorkspace } from './credits'
-import { createGeneration, tick } from './jobs'
+import { createVideoGeneration, createVoiceGeneration, tick } from './jobs'
 import type { Viewer } from './auth'
 import type { AvatarRow, JobRow, ProjectRow, VoiceRow, WorkspaceRow } from './types'
 
@@ -145,6 +145,18 @@ beforeEach(async () => {
   vi.clearAllMocks()
   heygenVideoStatus.mockResolvedValue({ status: 'processing' as const })
   heygenCreateVideo.mockResolvedValue('provider-video-1')
+  // createVideoGeneration re-downloads the approved voiceover from storage (a real cross-request
+  // hop in production) via the mocked getPresignedDownloadUrl's fake https://download.example.com
+  // URL — stub global fetch so that read succeeds instead of hitting a real, unresolvable host.
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) => {
+      if (typeof url === 'string' && url.startsWith('https://download.example.com/')) {
+        return new Response(new Uint8Array(Buffer.from('fake-voiceover-bytes')), { status: 200 })
+      }
+      throw new Error(`unexpected fetch in test: ${String(url)}`)
+    }),
+  )
 
   viewer = { token: TOKEN, viewerId: VIEWER_ID, isAnon: false, isSandbox: false }
   workspace = await bootstrapWorkspace(VIEWER_ID, TOKEN)
@@ -156,7 +168,7 @@ beforeEach(async () => {
     stage: 'video',
     status: 'draft',
     script: 'Hello world. This is a test script.',
-    format: 'short',
+    format: 'vertical',
     language: 'en',
     voice_id: voice.id,
     avatar_id: avatar.id,
@@ -165,21 +177,31 @@ beforeEach(async () => {
   }) as unknown as ProjectRow
 })
 
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
+
 async function getJobsForProject(): Promise<JobRow[]> {
   return dbList<JobRow>('jobs', { project_id: project.id }, TOKEN)
 }
 
-describe('createGeneration', () => {
-  it('reserves credits, runs the voice stage synchronously, and starts the video job', async () => {
-    const { generationJobs } = await createGeneration(project, viewer, {})
-    expect(generationJobs).toHaveLength(4)
+/** Runs the two-step flow (voice, then video) exactly as the frontend does: generate + approve
+ *  voice, refetch the project, then generate video off the approved voiceover. */
+async function generateVoiceThenVideo(): Promise<{ voiceJob: JobRow; videoJob: JobRow }> {
+  const { job: voiceJob } = await createVoiceGeneration(project, viewer, {})
+  const projectAfterVoice = await dbGet<ProjectRow>('projects', project.id, TOKEN)
+  const { job: videoJob } = await createVideoGeneration(projectAfterVoice, viewer, {})
+  return { voiceJob, videoJob }
+}
 
-    const voiceJob = generationJobs.find((j) => j.type === 'voice_gen')
-    const videoJob = generationJobs.find((j) => j.type === 'video_gen')
-    expect(voiceJob?.status).toBe('ready')
-    expect(voiceJob?.credits_charged).toBe(voiceJob?.credits_reserved)
-    expect(videoJob?.status).toBe('processing')
-    expect(videoJob?.provider_job_id).toBe('provider-video-1')
+describe('createVoiceGeneration + createVideoGeneration', () => {
+  it('reserves credits per step, runs the voice stage synchronously, and starts the video job', async () => {
+    const { voiceJob, videoJob } = await generateVoiceThenVideo()
+
+    expect(voiceJob.status).toBe('ready')
+    expect(voiceJob.credits_charged).toBe(voiceJob.credits_reserved)
+    expect(videoJob.status).toBe('processing')
+    expect(videoJob.provider_job_id).toBe('provider-video-1')
     expect(fishTts).toHaveBeenCalledTimes(1)
     expect(heygenCreateVideo).toHaveBeenCalledTimes(1)
 
@@ -189,7 +211,7 @@ describe('createGeneration', () => {
   })
 
   it('creates exactly one job row per pipeline stage (voice, video, transcribe, notes)', async () => {
-    await createGeneration(project, viewer, {})
+    await generateVoiceThenVideo()
     const jobs = await getJobsForProject()
     expect(jobs.map((j) => j.type).sort()).toEqual(['notes', 'transcribe', 'video_gen', 'voice_gen'])
   })
@@ -197,7 +219,7 @@ describe('createGeneration', () => {
 
 describe('tick — chains video -> transcribe -> notes and completes the project', () => {
   it('advances a ready video job through transcription and notes to project.status=ready', async () => {
-    await createGeneration(project, viewer, {})
+    await generateVoiceThenVideo()
     heygenVideoStatus.mockResolvedValue({ status: 'ready' as const, videoUrl: 'https://provider.example.com/video.mp4' })
 
     const result = await tick({ viewerId: VIEWER_ID, token: TOKEN })
@@ -224,7 +246,7 @@ describe('tick — chains video -> transcribe -> notes and completes the project
   })
 
   it('is idempotent: re-entrant tick calls do not re-process an already-ready job', async () => {
-    await createGeneration(project, viewer, {})
+    await generateVoiceThenVideo()
     heygenVideoStatus.mockResolvedValue({ status: 'ready' as const, videoUrl: 'https://provider.example.com/video.mp4' })
 
     await tick({ viewerId: VIEWER_ID, token: TOKEN })
@@ -238,7 +260,7 @@ describe('tick — chains video -> transcribe -> notes and completes the project
   })
 
   it('leaves a still-processing video job untouched and reports zero advanced', async () => {
-    await createGeneration(project, viewer, {})
+    await generateVoiceThenVideo()
     heygenVideoStatus.mockResolvedValue({ status: 'processing' as const })
 
     const result = await tick({ viewerId: VIEWER_ID, token: TOKEN })
@@ -252,7 +274,7 @@ describe('provider failure -> refund', () => {
   it('refunds the video job\'s reservation and cascades cancellation + refund to siblings when HeyGen createVideo throws', async () => {
     heygenCreateVideo.mockRejectedValue(new Error('HeyGen is down'))
 
-    await createGeneration(project, viewer, {})
+    await generateVoiceThenVideo()
 
     const jobs = await getJobsForProject()
     const voiceJob = jobs.find((j) => j.type === 'voice_gen')
@@ -276,7 +298,7 @@ describe('provider failure -> refund', () => {
   })
 
   it('refunds via a video-status failure reported mid-poll, not just start failures', async () => {
-    await createGeneration(project, viewer, {})
+    await generateVoiceThenVideo()
     heygenVideoStatus.mockResolvedValue({ status: 'failed' as const, error: 'render error' })
 
     await tick({ viewerId: VIEWER_ID, token: TOKEN })

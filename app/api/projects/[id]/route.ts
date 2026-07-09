@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { getViewer, unauthorized } from '../../../../lib/auth'
-import { dbDelete, dbGet, dbUpdate } from '../../../../lib/db'
+import { dbGet, dbUpdate } from '../../../../lib/db'
 import { errorResponse, notFound } from '../../../../lib/api-helpers'
 import { logger } from '../../../../lib/logger'
 import type { ProjectRow } from '../../../../lib/types'
@@ -10,7 +10,7 @@ const patchProjectSchema = z.object({
   title: z.string().trim().min(1).max(200).optional(),
   script: z.string().trim().max(200_000).optional(),
   stage: z.enum(['script', 'voice', 'video', 'render', 'publish']).optional(),
-  format: z.enum(['short', 'long']).optional(),
+  format: z.enum(['vertical', 'horizontal']).optional(),
   language: z.string().trim().min(2).max(10).optional(),
   voiceId: z.string().uuid().nullable().optional(),
   avatarId: z.string().uuid().nullable().optional(),
@@ -60,14 +60,17 @@ export async function PATCH(request: Request, { params }: { params: { id: string
   }
 }
 
+// Soft delete: `status` is a free-text column with no DB constraint, so 'archived' is a
+// value the app treats as hidden without needing a schema migration. Nothing is destroyed —
+// same principle as avatar removal.
 export async function DELETE(request: Request, { params }: { params: { id: string } }): Promise<NextResponse> {
   const viewer = getViewer(request)
   if (!viewer) return unauthorized()
   try {
     const existing = await loadOwnedProject(params.id, viewer.viewerId, viewer.token)
     if (!existing) return notFound('Project not found')
-    await dbDelete('projects', params.id, viewer.token)
-    logger.info({ msg: 'project deleted', projectId: params.id, viewerId: viewer.viewerId })
+    await dbUpdate<ProjectRow>('projects', params.id, { status: 'archived' }, viewer.token)
+    logger.info({ msg: 'project archived (soft delete)', projectId: params.id, viewerId: viewer.viewerId })
     return NextResponse.json({ ok: true })
   } catch (err) {
     return errorResponse(err, 'DELETE /api/projects/[id]')

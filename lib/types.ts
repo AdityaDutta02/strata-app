@@ -13,8 +13,8 @@ export interface WorkspaceRow {
 }
 
 export type ProjectStage = 'script' | 'voice' | 'video' | 'render' | 'publish'
-export type ProjectStatus = 'draft' | 'processing' | 'ready' | 'failed'
-export type ProjectFormat = 'short' | 'long'
+export type ProjectStatus = 'draft' | 'processing' | 'ready' | 'failed' | 'archived'
+export type ProjectFormat = 'vertical' | 'horizontal'
 export type VoiceMode = 'tts' | 'swap'
 
 export interface ProjectRow {

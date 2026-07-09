@@ -192,7 +192,7 @@ export async function avatarStatus(avatarId: string, viewerId: string, token: st
   }
 }
 
-/** Starts Avatar V talking-head video generation (9:16) for a trained avatar + a rendered audio
+/** Starts Avatar V talking-head video generation for a trained avatar + a rendered audio
  *  track. Returns HeyGen's video id (poll with videoStatus). */
 export async function createVideo(
   avatarId: string,
@@ -200,8 +200,9 @@ export async function createVideo(
   viewerId: string,
   token: string,
   resolution: '720p' | '1080p' = '720p',
+  aspectRatio: '9:16' | '16:9' = '9:16',
 ): Promise<string> {
-  await logProviderCall(viewerId, 'heygen.createVideo', { avatarId, audioUrl, resolution }, token)
+  await logProviderCall(viewerId, 'heygen.createVideo', { avatarId, audioUrl, resolution, aspectRatio }, token)
   if (isMockMode(token)) {
     return `mock-video-${Buffer.from(avatarId + audioUrl).toString('hex').slice(0, 12)}`
   }
@@ -212,7 +213,7 @@ export async function createVideo(
       type: 'avatar',
       avatar_id: avatarId,
       audio_url: audioUrl,
-      aspect_ratio: '9:16',
+      aspect_ratio: aspectRatio,
       resolution,
       engine: { type: 'avatar_v' },
     }),

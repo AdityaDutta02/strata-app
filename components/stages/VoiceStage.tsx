@@ -1,9 +1,10 @@
 "use client";
 import { useRef, useState } from "react";
-import { Upload, ArrowRight, Loader2 } from "lucide-react";
+import { ArrowRight, Mic2, Upload, Loader2 } from "lucide-react";
 import Button from "../Button";
+import JobProgress from "../JobProgress";
 import StageHeader from "./StageHeader";
-import type { Voice, VoiceMode } from "@/app/_lib/types";
+import type { Job, Voice, VoiceMode } from "@/app/_lib/types";
 
 interface VoiceStageProps {
   voices: Voice[];
@@ -12,10 +13,13 @@ interface VoiceStageProps {
   voiceMode: VoiceMode;
   recordingKey: string | null;
   uploadingRecording: boolean;
-  savingSelection: boolean;
   onSelectVoice: (id: string) => void;
   onChangeMode: (mode: VoiceMode) => void;
   onUploadRecording: (file: File) => void;
+  voiceJob: Job | null;
+  generating: boolean;
+  generateError?: string | null;
+  onGenerateVoice: () => void;
   onContinue: () => void;
 }
 
@@ -24,9 +28,9 @@ const TABS: { key: VoiceMode; label: string }[] = [
   { key: "swap", label: "Upload recording" },
 ];
 
-// Voice stage repurposed per docs/BUILD-SPEC-MVP.md: two tabs — TTS voice picker,
-// or upload a recording to swap onto the selected voice (Kits.ai). No per-scene UI —
-// this only records the selection; the chain is kicked off from the Video stage.
+// Voice stage: pick a voice, generate the voiceover, listen/review, then explicitly approve
+// before moving to Video. Generation no longer auto-chains into video — a bad voiceover or an
+// avatar consent requirement should surface here, before any video credits are spent.
 export default function VoiceStage({
   voices,
   loadingVoices,
@@ -34,17 +38,61 @@ export default function VoiceStage({
   voiceMode,
   recordingKey,
   uploadingRecording,
-  savingSelection,
   onSelectVoice,
   onChangeMode,
   onUploadRecording,
+  voiceJob,
+  generating,
+  generateError,
+  onGenerateVoice,
   onContinue,
 }: VoiceStageProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
 
   const readyVoices = voices.filter((v) => v.status === "ready");
-  const canContinue = voiceMode === "tts" ? Boolean(voiceId) : Boolean(recordingKey);
+  const canGenerate = (voiceMode === "tts" ? Boolean(voiceId) : Boolean(recordingKey)) && !generating;
+  const isFailed = voiceJob?.status === "failed";
+  const isReady = voiceJob?.status === "ready";
+  const isGenerating = Boolean(voiceJob) && !isReady && !isFailed;
+  const jobLabel = voiceMode === "swap" ? "Swapping voice" : "Generating voice";
+
+  if (isGenerating || isFailed) {
+    return (
+      <div className="space-y-5">
+        <StageHeader step={2} title="Voice" desc="Generating your voiceover — you'll review it before moving to video." />
+        <JobProgress
+          status={voiceJob!.status}
+          label={jobLabel}
+          errorMessage={voiceJob!.error}
+          onRetry={onGenerateVoice}
+        />
+      </div>
+    );
+  }
+
+  if (isReady) {
+    return (
+      <div className="space-y-5">
+        <StageHeader step={2} title="Voice" desc="Your voiceover is ready. Approve it to continue to Video." />
+        <div className="flex items-center gap-3 rounded-md border border-success/40 bg-surface-card p-5">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-sm bg-success/10 text-success">
+            <Mic2 size={18} strokeWidth={2} />
+          </div>
+          <div>
+            <h3 className="text-base font-semibold tracking-tight text-fg-primary">Voiceover generated</h3>
+            <p className="mt-0.5 text-sm text-fg-secondary">Not right? Regenerate before approving.</p>
+          </div>
+        </div>
+        <div className="flex justify-end gap-2">
+          <Button variant="subtle" onClick={onGenerateVoice}>Regenerate</Button>
+          <Button variant="primary" icon={ArrowRight} onClick={onContinue}>
+            Approve &amp; Continue to Video
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-5">
@@ -77,7 +125,7 @@ export default function VoiceStage({
             <p className="text-sm text-fg-secondary">Loading voices…</p>
           ) : readyVoices.length === 0 ? (
             <p className="text-sm text-fg-secondary">
-              No voices yet — train one from <span className="font-medium text-fg-default">Onboarding</span> first.
+              No voices yet — train one from <span className="font-medium text-fg-default">Avatars</span> first.
             </p>
           ) : (
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -141,9 +189,11 @@ export default function VoiceStage({
         </div>
       )}
 
+      {generateError && <p className="text-sm text-error" role="alert">{generateError}</p>}
+
       <div className="flex justify-end">
-        <Button variant="primary" icon={ArrowRight} disabled={!canContinue || savingSelection} onClick={onContinue}>
-          {savingSelection ? "Saving…" : "Continue to Video"}
+        <Button variant="primary" icon={Mic2} disabled={!canGenerate} onClick={onGenerateVoice}>
+          {generating ? "Starting…" : "Generate voice"}
         </Button>
       </div>
     </div>

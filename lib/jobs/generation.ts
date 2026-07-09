@@ -41,17 +41,17 @@ async function step<T>(label: string, fn: () => Promise<T>): Promise<T> {
   }
 }
 
-export interface GenerateBody {
+export interface GenerateVoiceBody {
   recordingKey?: string
-  /** Render quality — 720p standard, 1080p optional. Carried in the video job's
-   *  input_json (the live projects table has no resolution column). */
-  resolution?: '720p' | '1080p'
 }
 
-export async function createGeneration(project: ProjectRow, viewer: Viewer, body: GenerateBody): Promise<{ generationJobs: JobRow[] }> {
+/** Step 1 of the (now explicit two-step) generation flow: voice only. The user reviews and
+ *  approves the voiceover before any HeyGen credits are spent on video — previously voice and
+ *  video ran back-to-back with no pause, so a bad voiceover or unapproved avatar consent could
+ *  only be discovered after video generation had already started. */
+export async function createVoiceGeneration(project: ProjectRow, viewer: Viewer, body: GenerateVoiceBody): Promise<{ job: JobRow }> {
   const { token, viewerId } = viewer
   if (!project.script.trim()) throw new JobValidationError('Project script is empty')
-  if (!project.avatar_id) throw new JobValidationError('Project has no avatar selected')
   if (project.voice_mode === 'tts' && !project.voice_id) throw new JobValidationError('Project has no voice selected')
   if (project.voice_mode === 'swap' && !body.recordingKey) throw new JobValidationError('recordingKey is required for voice swap')
 
@@ -59,15 +59,9 @@ export async function createGeneration(project: ProjectRow, viewer: Viewer, body
   const { minutes } = estimateGeneration(project.script, project.format, project.voice_mode)
   const voiceRate = project.voice_mode === 'swap' ? RATES.voice_swap : RATES.voice_gen
   const voiceCredits = minutes * voiceRate
-  const videoCredits = minutes * RATES.video_gen
 
-  await reserveCredits(workspace, voiceCredits + videoCredits, token, { note: `generation for project ${project.id}` })
-  await dbUpdate<ProjectRow>(
-    'projects',
-    project.id,
-    { credits_spent: (project.credits_spent ?? 0) + voiceCredits + videoCredits },
-    token,
-  )
+  await reserveCredits(workspace, voiceCredits, token, { note: `voice generation for project ${project.id}` })
+  await dbUpdate<ProjectRow>('projects', project.id, { credits_spent: (project.credits_spent ?? 0) + voiceCredits }, token)
 
   const voiceJobType: JobType = project.voice_mode === 'swap' ? 'voice_swap' : 'voice_gen'
   const voiceJob = await dbInsert<JobRow>(
@@ -84,32 +78,12 @@ export async function createGeneration(project: ProjectRow, viewer: Viewer, body
     },
     token,
   )
-  await dbInsert<JobRow>(
-    'jobs',
-    { viewer_id: viewerId, project_id: project.id, type: 'video_gen', status: 'queued', input_json: { resolution: body.resolution ?? '720p' }, output_json: {}, credits_reserved: videoCredits, credits_charged: 0 },
-    token,
-  )
-  await dbInsert<JobRow>(
-    'jobs',
-    { viewer_id: viewerId, project_id: project.id, type: 'transcribe', status: 'queued', input_json: {}, output_json: {}, credits_reserved: 0, credits_charged: 0 },
-    token,
-  )
-  await dbInsert<JobRow>(
-    'jobs',
-    { viewer_id: viewerId, project_id: project.id, type: 'notes', status: 'queued', input_json: {}, output_json: {}, credits_reserved: 0, credits_charged: 0 },
-    token,
-  )
 
-  await dbUpdate<ProjectRow>('projects', project.id, { status: 'processing', stage: 'video' }, token)
+  await dbUpdate<ProjectRow>('projects', project.id, { status: 'processing' }, token)
+  await runVoiceJob(voiceJob, project, viewer)
 
-  try {
-    await runVoiceJob(voiceJob, project, viewer)
-  } catch (err) {
-    logger.error({ msg: 'unexpected error starting voice job', jobId: voiceJob.id, err })
-  }
-
-  const generationJobs = await dbList<JobRow>('jobs', { project_id: project.id }, token)
-  return { generationJobs }
+  const fresh = await dbGet<JobRow>('jobs', voiceJob.id, token)
+  return { job: fresh }
 }
 
 async function runVoiceJob(job: JobRow, project: ProjectRow, viewer: Viewer): Promise<void> {
@@ -144,11 +118,48 @@ async function runVoiceJob(job: JobRow, project: ProjectRow, viewer: Viewer): Pr
       token,
     })
     await markJobReady(job, { audioAssetId: audioAsset.id }, token)
-    const [videoJob] = await dbList<JobRow>('jobs', { project_id: project.id, type: 'video_gen' }, token)
-    if (videoJob) await startVideoJob(project, videoJob, audioBuffer, viewer)
   } catch (err) {
-    await failJob(job, token, err instanceof Error ? err.message : String(err), { cascadeProject: true })
+    await failJob(job, token, err instanceof Error ? err.message : String(err))
   }
+}
+
+const CONSENT_GROUP_RE = /Avatar group '([^']+)'/
+
+/** HeyGen enforces consent at video-render time regardless of whether the create-avatar
+ *  response flagged it as required — so this can surface on the very first video attempt for
+ *  an avatar that looked "ready". Detects that specific error, requests the consent URL, and
+ *  stores + emails it so the user has a concrete next step instead of a dead-end error. */
+async function handleConsentRequired(
+  err: unknown,
+  videoJob: JobRow,
+  avatarName: string | undefined,
+  viewerId: string,
+  token: string,
+): Promise<string | null> {
+  if (!(err instanceof Error) || !err.message.includes('avatar_consent_required')) return null
+  const groupId = err.message.match(CONSENT_GROUP_RE)?.[1]
+  if (!groupId) return null
+  try {
+    const { url } = await heygen.requestConsent(groupId, viewerId, token)
+    await dbUpdate<JobRow>('jobs', videoJob.id, { output_json: { consentUrl: url } }, token)
+    try {
+      await sendEmail(
+        'Strata: avatar consent approval needed',
+        `<p>Your avatar${avatarName ? ` "${avatarName}"` : ''} needs a one-time consent approval before video can be generated.</p><p><a href="${url}">Open the consent page</a> (the person in the training footage must approve).</p>`,
+        token,
+      )
+    } catch (emailErr) {
+      logger.warn({ msg: 'consent email failed (video gen)', err: String(emailErr) })
+    }
+    return url
+  } catch (consentErr) {
+    logger.warn({ msg: 'consent url request failed (video gen)', err: String(consentErr) })
+    return null
+  }
+}
+
+function aspectRatioForFormat(format: ProjectRow['format']): '9:16' | '16:9' {
+  return format === 'horizontal' ? '16:9' : '9:16'
 }
 
 /** Starts (or retries) HeyGen video generation for `videoJob`, given the voiceover bytes
@@ -178,18 +189,90 @@ async function startVideoJob(project: ProjectRow, videoJob: JobRow, audioBuffer:
           viewerId,
           token,
           videoJob.input_json.resolution === '1080p' ? '1080p' : '720p',
+          aspectRatioForFormat(project.format),
         ),
       ),
     )
     await dbUpdate<JobRow>('jobs', videoJob.id, { status: 'processing', provider_job_id: providerJobId }, token)
     await scheduleWatchdog({ ...videoJob, status: 'processing', provider_job_id: providerJobId }, token)
   } catch (err) {
-    const message = err instanceof JobValidationError ? err.message : describeError(err)
+    const consentUrl = await handleConsentRequired(err, videoJob, avatar?.name, viewerId, token)
+    const message = consentUrl
+      ? 'This avatar needs one-time consent approval before video can render — open the consent link below, approve, then click Retry.'
+      : err instanceof JobValidationError
+        ? err.message
+        : describeError(err)
     await failJob(videoJob, token, message, { cascadeProject: true })
   }
 }
 
-/** Retries a failed video_gen job using the project's already-generated voiceover — no need
+/** Finds the project's most recently completed voiceover — the one the user approved. */
+async function findApprovedVoiceover(project: ProjectRow, token: string): Promise<AssetRow> {
+  const jobs = await dbList<JobRow>('jobs', { project_id: project.id }, token)
+  const voiceJob = jobs
+    .filter((j) => (j.type === 'voice_gen' || j.type === 'voice_swap') && j.status === 'ready')
+    .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0]
+  const audioAssetId = voiceJob?.output_json.audioAssetId as string | undefined
+  if (!audioAssetId) throw new JobValidationError('Generate and approve a voiceover before generating video')
+  return dbGet<AssetRow>('assets', audioAssetId, token)
+}
+
+async function readVoiceoverBuffer(audioAsset: AssetRow, token: string): Promise<Buffer> {
+  return step('Reading voiceover from storage', () =>
+    withRetry(async () => {
+      const { url } = await getPresignedDownloadUrl(audioAsset.storage_key, token)
+      const res = await fetch(url, { signal: providerTimeout() })
+      if (!res.ok) throw new Error(`failed to read voiceover audio: ${res.status}`)
+      return Buffer.from(await res.arrayBuffer())
+    }),
+  )
+}
+
+export interface GenerateVideoBody {
+  /** Render quality — 720p standard, 1080p optional. Carried in the video job's
+   *  input_json (the live projects table has no resolution column). */
+  resolution?: '720p' | '1080p'
+}
+
+/** Step 2 of the generation flow: video + transcribe + notes, using the already-approved
+ *  voiceover. Requires an avatar already attached to the project (set at creation time) and a
+ *  ready voice_gen/voice_swap job. */
+export async function createVideoGeneration(project: ProjectRow, viewer: Viewer, body: GenerateVideoBody): Promise<{ job: JobRow }> {
+  const { token, viewerId } = viewer
+  if (!project.avatar_id) throw new JobValidationError('Project has no avatar selected')
+  const audioAsset = await findApprovedVoiceover(project, token)
+
+  const workspace = await bootstrapWorkspace(viewerId, token)
+  const { minutes } = estimateGeneration(project.script, project.format, project.voice_mode)
+  const videoCredits = minutes * RATES.video_gen
+  await reserveCredits(workspace, videoCredits, token, { note: `video generation for project ${project.id}` })
+  await dbUpdate<ProjectRow>('projects', project.id, { credits_spent: (project.credits_spent ?? 0) + videoCredits }, token)
+
+  const videoJob = await dbInsert<JobRow>(
+    'jobs',
+    { viewer_id: viewerId, project_id: project.id, type: 'video_gen', status: 'queued', input_json: { resolution: body.resolution ?? '720p' }, output_json: {}, credits_reserved: videoCredits, credits_charged: 0 },
+    token,
+  )
+  await dbInsert<JobRow>(
+    'jobs',
+    { viewer_id: viewerId, project_id: project.id, type: 'transcribe', status: 'queued', input_json: {}, output_json: {}, credits_reserved: 0, credits_charged: 0 },
+    token,
+  )
+  await dbInsert<JobRow>(
+    'jobs',
+    { viewer_id: viewerId, project_id: project.id, type: 'notes', status: 'queued', input_json: {}, output_json: {}, credits_reserved: 0, credits_charged: 0 },
+    token,
+  )
+  await dbUpdate<ProjectRow>('projects', project.id, { status: 'processing', stage: 'video' }, token)
+
+  const audioBuffer = await readVoiceoverBuffer(audioAsset, token)
+  await startVideoJob(project, videoJob, audioBuffer, viewer)
+
+  const fresh = await dbGet<JobRow>('jobs', videoJob.id, token)
+  return { job: fresh }
+}
+
+/** Retries a failed video_gen job using the project's already-approved voiceover — no need
  *  to redo TTS. Re-reserves the failed job's credits (refunded on the earlier failure) into
  *  a fresh job row, mirroring the avatar-training retry pattern. */
 export async function retryVideoGeneration(project: ProjectRow, viewer: Viewer): Promise<void> {
@@ -200,22 +283,8 @@ export async function retryVideoGeneration(project: ProjectRow, viewer: Viewer):
     .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0]
   if (!failedVideoJob) throw new JobValidationError('No failed video job to retry')
 
-  const voiceJobs = await dbList<JobRow>('jobs', { project_id: project.id }, token)
-  const voiceJob = voiceJobs
-    .filter((j) => (j.type === 'voice_gen' || j.type === 'voice_swap') && j.status === 'ready')
-    .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0]
-  const audioAssetId = voiceJob?.output_json.audioAssetId as string | undefined
-  if (!audioAssetId) throw new JobValidationError('No completed voiceover to retry video generation from')
-  const audioAsset = await dbGet<AssetRow>('assets', audioAssetId, token)
-
-  const audioBuffer = await step('Reading voiceover from storage', () =>
-    withRetry(async () => {
-      const { url } = await getPresignedDownloadUrl(audioAsset.storage_key, token)
-      const res = await fetch(url, { signal: providerTimeout() })
-      if (!res.ok) throw new Error(`failed to read voiceover audio: ${res.status}`)
-      return Buffer.from(await res.arrayBuffer())
-    }),
-  )
+  const audioAsset = await findApprovedVoiceover(project, token)
+  const audioBuffer = await readVoiceoverBuffer(audioAsset, token)
 
   if (failedVideoJob.credits_reserved > 0) {
     const workspace = await bootstrapWorkspace(viewerId, token)

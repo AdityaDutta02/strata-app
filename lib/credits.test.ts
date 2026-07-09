@@ -78,26 +78,26 @@ async function ledgerFor(workspaceId: string): Promise<CreditLedgerRow[]> {
 
 describe('estimateMinutes', () => {
   it('rounds up to the next whole minute at 1000 chars/min', () => {
-    expect(estimateMinutes('a'.repeat(1000), 'short')).toBe(1)
-    expect(estimateMinutes('a'.repeat(1001), 'short')).toBe(2)
-    expect(estimateMinutes('a'.repeat(2500), 'long')).toBe(3)
+    expect(estimateMinutes('a'.repeat(1000), 'vertical')).toBe(1)
+    expect(estimateMinutes('a'.repeat(1001), 'vertical')).toBe(2)
+    expect(estimateMinutes('a'.repeat(2500), 'horizontal')).toBe(3)
   })
 
   it('has a floor of 1 minute, even for an empty script', () => {
-    expect(estimateMinutes('', 'short')).toBe(1)
-    expect(estimateMinutes('   ', 'short')).toBe(1)
+    expect(estimateMinutes('', 'vertical')).toBe(1)
+    expect(estimateMinutes('   ', 'vertical')).toBe(1)
   })
 })
 
 describe('estimateGeneration', () => {
   it('matches the documented full-chain rate of 41 cr/min for tts (1 + 40)', () => {
-    const { minutes, credits } = estimateGeneration('a'.repeat(1000), 'short', 'tts')
+    const { minutes, credits } = estimateGeneration('a'.repeat(1000), 'vertical', 'tts')
     expect(minutes).toBe(1)
     expect(credits).toBe(41)
   })
 
   it('uses the voice_swap rate (4 cr/min) instead of voice_gen for swap mode', () => {
-    const { credits } = estimateGeneration('a'.repeat(1000), 'short', 'swap')
+    const { credits } = estimateGeneration('a'.repeat(1000), 'vertical', 'swap')
     expect(credits).toBe(4 + 40)
   })
 })

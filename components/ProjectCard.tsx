@@ -1,7 +1,9 @@
 "use client";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Film, Coins, Clock, RotateCcw, Play, MoreHorizontal } from "lucide-react";
+import { Film, Coins, Clock, RotateCcw, Play, MoreHorizontal, Trash2 } from "lucide-react";
 import StageChip from "./StageChip";
+import Button from "./Button";
 import { formatCredits, posterGradient, relativeTime, tintFor } from "@/app/_lib/format";
 import type { Project } from "@/app/_lib/types";
 
@@ -13,8 +15,10 @@ const STAGE_LABEL: Record<Project["stage"], string> = {
   publish: "Publish",
 };
 
-export default function ProjectCard({ project }: { project: Project }) {
+export default function ProjectCard({ project, onDelete }: { project: Project; onDelete: () => void }) {
   const router = useRouter();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const isFailed = project.status === "failed";
   const isReady = project.status === "ready";
   const tint = tintFor(project.id);
@@ -32,7 +36,7 @@ export default function ProjectCard({ project }: { project: Project }) {
         }
       }}
       className={[
-        "group flex cursor-pointer flex-col overflow-hidden rounded-sm border bg-surface-card text-left outline-none",
+        "group relative flex cursor-pointer flex-col overflow-hidden rounded-sm border bg-surface-card text-left outline-none",
         "focus-visible:ring-2 focus-visible:ring-line-focus/40 focus-visible:border-line-focus",
         isFailed
           ? "border-error/40 hover:border-error"
@@ -60,17 +64,42 @@ export default function ProjectCard({ project }: { project: Project }) {
         </div>
 
         {/* Menu */}
-        <button
-          aria-label="Project options"
-          onClick={(e) => e.stopPropagation()}
-          className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-sm bg-surface-card/90 text-fg-secondary opacity-0 shadow-e1 hover:text-fg-default group-hover:opacity-100 focus-visible:opacity-100"
-        >
-          <MoreHorizontal size={14} />
-        </button>
+        <div className="absolute right-2 top-2">
+          <button
+            aria-label="Project options"
+            onClick={(e) => {
+              e.stopPropagation();
+              setMenuOpen((v) => !v);
+            }}
+            className={[
+              "flex h-6 w-6 items-center justify-center rounded-sm bg-surface-card/90 text-fg-secondary shadow-e1 hover:text-fg-default",
+              menuOpen ? "opacity-100" : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
+            ].join(" ")}
+          >
+            <MoreHorizontal size={14} />
+          </button>
+          {menuOpen && (
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="absolute right-0 top-7 z-10 w-36 overflow-hidden rounded-sm border border-line-subtle bg-surface-card shadow-e2"
+            >
+              <button
+                onClick={() => {
+                  setMenuOpen(false);
+                  setConfirmOpen(true);
+                }}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-error hover:bg-surface-subtle"
+              >
+                <Trash2 size={13} strokeWidth={2} />
+                Delete
+              </button>
+            </div>
+          )}
+        </div>
 
         {/* Format */}
         <span className="tnum absolute bottom-2 right-2 rounded-sm bg-black/55 px-1.5 py-0.5 font-mono text-[11px] font-medium text-white">
-          {project.format === "short" ? "Short" : "Long"}
+          {project.format === "horizontal" ? "Horizontal" : "Vertical"}
         </span>
       </div>
 
@@ -108,6 +137,34 @@ export default function ProjectCard({ project }: { project: Project }) {
           </div>
         )}
       </div>
+
+      {confirmOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="absolute inset-0 bg-black/50" onClick={() => setConfirmOpen(false)} />
+          <div role="dialog" aria-modal="true" className="relative w-full max-w-[380px] rounded-md border border-line-subtle bg-surface-card p-5 shadow-e4">
+            <h2 className="text-base font-semibold text-fg-primary">Delete &quot;{project.title}&quot;?</h2>
+            <p className="mt-2 text-sm text-fg-secondary">
+              This removes it from your project list. Nothing is permanently deleted.
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <Button variant="subtle" onClick={() => setConfirmOpen(false)}>Cancel</Button>
+              <Button
+                variant="danger"
+                icon={Trash2}
+                onClick={() => {
+                  setConfirmOpen(false);
+                  onDelete();
+                }}
+              >
+                Delete
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -19,7 +19,6 @@ import { useJobPolling } from "@/hooks/use-job-polling";
 import { formatCredits, tintFor } from "@/app/_lib/format";
 import type {
   Asset,
-  Avatar,
   EstimateResponse,
   Job,
   Project,
@@ -225,7 +224,13 @@ function WorkspaceInner({
   const [voiceMode, setVoiceMode] = useState<VoiceMode>(project.voice_mode);
   const [recordingKey, setRecordingKey] = useState<string | null>(null);
   const [uploadingRecording, setUploadingRecording] = useState(false);
-  const [savingVoiceSelection, setSavingVoiceSelection] = useState(false);
+  const [voiceGenerating, setVoiceGenerating] = useState(false);
+  const [voiceGenerateError, setVoiceGenerateError] = useState<string | null>(null);
+
+  const voiceJob =
+    jobs
+      .filter((j) => j.type === "voice_gen" || j.type === "voice_swap")
+      .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0] ?? null;
 
   useEffect(() => {
     let cancelled = false;
@@ -252,57 +257,59 @@ function WorkspaceInner({
     }
   }
 
-  async function handleVoiceContinue(): Promise<void> {
-    try {
-      setSavingVoiceSelection(true);
-      const updated = await api.projects.patch(token, project.id, { voiceId, voiceMode, stage: "video" });
+  async function handleScriptContinue(): Promise<void> {
+    if (project.stage === "script") {
+      const updated = await api.projects.patch(token, project.id, { stage: "voice" });
       setProject(updated);
-      onStageChange("video");
-    } finally {
-      setSavingVoiceSelection(false);
     }
+    onStageChange("voice");
+  }
+
+  async function handleGenerateVoice(): Promise<void> {
+    if (!estimate) return;
+    if (voiceMode === "tts" && !voiceId) return;
+    if (voiceMode === "swap" && !recordingKey) return;
+    const voiceRate = voiceMode === "swap" ? 4 : 1;
+    const voiceCost = estimate.minutes * voiceRate;
+    if (!requestSpend(voiceCost, "Generate voice")) return;
+    try {
+      setVoiceGenerating(true);
+      setVoiceGenerateError(null);
+      await api.projects.patch(token, project.id, { voiceId, voiceMode });
+      await api.projects.generateVoice(token, project.id, voiceMode === "swap" && recordingKey ? { recordingKey } : {});
+      const updated = await api.projects.get(token, project.id);
+      setProject(updated);
+      await refreshJobs();
+      await refreshWallet();
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 402) {
+        setModal({ open: true, cost: voiceCost, label: "Generate voice" });
+      } else if (e instanceof ApiError) {
+        setVoiceGenerateError(e.message);
+      }
+    } finally {
+      setVoiceGenerating(false);
+    }
+  }
+
+  async function handleVoiceApprove(): Promise<void> {
+    const updated = await api.projects.patch(token, project.id, { stage: "video" });
+    setProject(updated);
+    onStageChange("video");
   }
 
   // ── Video / generate ────────────────────────────────────────────────────
-  const [avatars, setAvatars] = useState<Avatar[]>([]);
-  const [loadingAvatars, setLoadingAvatars] = useState(true);
-  const [avatarId, setAvatarId] = useState<string | null>(project.avatar_id);
-  const [savingAvatarSelection, setSavingAvatarSelection] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const list = await api.avatars(token);
-        if (!cancelled) setAvatars(list);
-      } finally {
-        if (!cancelled) setLoadingAvatars(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [token]);
-
-  async function handleSelectAvatar(id: string): Promise<void> {
-    setAvatarId(id);
-    try {
-      setSavingAvatarSelection(true);
-      const updated = await api.projects.patch(token, project.id, { avatarId: id });
-      setProject(updated);
-    } finally {
-      setSavingAvatarSelection(false);
-    }
-  }
-
   async function handleGenerate(): Promise<void> {
-    if (!estimate || !requestSpend(estimate.credits, "Generate avatar video")) return;
+    if (!estimate) return;
+    const videoCost = estimate.minutes * 40;
+    if (!requestSpend(videoCost, "Generate avatar video")) return;
     try {
       setGenerating(true);
       setGenerateError(null);
-      await api.projects.generate(token, project.id, voiceMode === "swap" && recordingKey ? { recordingKey } : {});
+      await api.projects.generate(token, project.id, {});
       setScriptDirty(false);
       const updated = await api.projects.get(token, project.id);
       setProject(updated);
@@ -310,7 +317,7 @@ function WorkspaceInner({
       await refreshWallet();
     } catch (e) {
       if (e instanceof ApiError && e.status === 402) {
-        setModal({ open: true, cost: estimate.credits, label: "Generate avatar video" });
+        setModal({ open: true, cost: videoCost, label: "Generate avatar video" });
       } else if (e instanceof ApiError) {
         setGenerateError(e.message);
       }
@@ -363,6 +370,10 @@ function WorkspaceInner({
   }
 
   async function handleRetryJob(job: Job): Promise<void> {
+    if (job.type === "voice_gen" || job.type === "voice_swap") {
+      await handleGenerateVoice();
+      return;
+    }
     if (job.type !== "video_gen") {
       await handleGenerate();
       return;
@@ -420,6 +431,7 @@ function WorkspaceInner({
               estimate={estimate}
               estimating={estimating}
               saving={savingScript}
+              onContinue={() => void handleScriptContinue()}
             />
           )}
           {activeStage === "voice" && (
@@ -430,20 +442,18 @@ function WorkspaceInner({
               voiceMode={voiceMode}
               recordingKey={recordingKey}
               uploadingRecording={uploadingRecording}
-              savingSelection={savingVoiceSelection}
               onSelectVoice={setVoiceId}
               onChangeMode={setVoiceMode}
               onUploadRecording={(f) => void handleUploadRecording(f)}
-              onContinue={() => void handleVoiceContinue()}
+              voiceJob={voiceJob}
+              generating={voiceGenerating}
+              generateError={voiceGenerateError}
+              onGenerateVoice={() => void handleGenerateVoice()}
+              onContinue={() => void handleVoiceApprove()}
             />
           )}
           {activeStage === "video" && (
             <VideoStage
-              avatars={avatars}
-              loadingAvatars={loadingAvatars}
-              avatarId={avatarId}
-              savingSelection={savingAvatarSelection}
-              onSelectAvatar={(id) => void handleSelectAvatar(id)}
               estimate={estimate}
               chainJobs={jobs}
               stale={scriptDirty}

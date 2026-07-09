@@ -1,16 +1,11 @@
 "use client";
-import { Clapperboard } from "lucide-react";
+import { Clapperboard, ShieldCheck } from "lucide-react";
 import Button from "../Button";
 import JobProgress from "../JobProgress";
 import StageHeader, { StaleBanner } from "./StageHeader";
-import type { Avatar, EstimateResponse, Job } from "@/app/_lib/types";
+import type { EstimateResponse, Job } from "@/app/_lib/types";
 
 interface VideoStageProps {
-  avatars: Avatar[];
-  loadingAvatars: boolean;
-  avatarId: string | null;
-  savingSelection: boolean;
-  onSelectAvatar: (id: string) => void;
   estimate: EstimateResponse | null;
   chainJobs: Job[];
   stale: boolean;
@@ -20,7 +15,7 @@ interface VideoStageProps {
   onRetryJob: (job: Job) => void;
 }
 
-const CHAIN_ORDER: Job["type"][] = ["voice_gen", "voice_swap", "video_gen", "transcribe", "notes"];
+const CHAIN_ORDER: Job["type"][] = ["video_gen", "transcribe", "notes"];
 
 function mostRelevantJob(jobs: Job[]): Job | null {
   const chain = jobs
@@ -29,14 +24,11 @@ function mostRelevantJob(jobs: Job[]): Job | null {
   return chain.find((j) => j.status !== "ready") ?? chain[chain.length - 1] ?? null;
 }
 
-// Video stage repurposed per docs/BUILD-SPEC-MVP.md: avatar picker grid + single
-// "Generate avatar video" job card (replaces the design's per-scene prompt cards).
+// Video stage: avatar is already attached at project creation, and voice was already
+// generated + approved on the previous stage — this is just the "generate video, transcript,
+// notes" trigger + progress. A failed video job with a consentUrl means HeyGen is blocking on
+// one-time avatar consent — surface it as an actionable link, not just an error string.
 export default function VideoStage({
-  avatars,
-  loadingAvatars,
-  avatarId,
-  savingSelection,
-  onSelectAvatar,
   estimate,
   chainJobs,
   stale,
@@ -45,23 +37,24 @@ export default function VideoStage({
   onGenerate,
   onRetryJob,
 }: VideoStageProps) {
-  const readyAvatars = avatars.filter((a) => a.status === "ready");
   const activeJob = mostRelevantJob(chainJobs);
   const chainStarted = chainJobs.length > 0 && !stale;
+  const consentUrl = activeJob?.status === "failed" ? (activeJob.output_json.consentUrl as string | undefined) : undefined;
+  const videoCost = estimate ? estimate.minutes * 40 : undefined;
 
   return (
     <div className="space-y-5">
       <StageHeader
         step={3}
         title="Video"
-        desc="Pick a trained avatar, then generate the talking-head video, transcript and editor notes."
+        desc="Generate the talking-head video, transcript and editor notes."
         action={
           !chainStarted ? (
             <Button
               variant="accent"
               icon={Clapperboard}
-              cost={estimate?.credits}
-              disabled={!avatarId || savingSelection || generating}
+              cost={videoCost}
+              disabled={generating}
               onClick={onGenerate}
               data-testid="generate-button"
             >
@@ -72,48 +65,30 @@ export default function VideoStage({
       />
 
       {stale && chainJobs.length > 0 && (
-        <StaleBanner onRegenerate={onGenerate} cost={estimate?.credits} />
+        <StaleBanner onRegenerate={onGenerate} cost={videoCost} />
       )}
 
       {generateError && !chainStarted && (
         <p className="text-sm text-error" role="alert">{generateError}</p>
       )}
 
-      {!chainStarted && (
-        <div>
-          <div className="eyebrow mb-2 text-[10px] text-fg-secondary">Your avatars</div>
-          {loadingAvatars ? (
-            <p className="text-sm text-fg-secondary">Loading avatars…</p>
-          ) : readyAvatars.length === 0 ? (
-            <p className="text-sm text-fg-secondary">
-              No avatars yet — train one from <span className="font-medium text-fg-default">Onboarding</span> first.
+      {consentUrl && (
+        <div className="flex items-start gap-3 rounded-md border border-warning/40 bg-warning/5 p-4">
+          <ShieldCheck size={18} strokeWidth={2} className="mt-0.5 shrink-0 text-warning" />
+          <div className="text-sm text-fg-primary">
+            <p className="font-medium">One-time avatar consent required</p>
+            <p className="mt-0.5 text-fg-secondary">
+              The person in the training footage must approve before video can render.
             </p>
-          ) : (
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-              {readyAvatars.map((a) => (
-                <button
-                  key={a.id}
-                  onClick={() => onSelectAvatar(a.id)}
-                  className={[
-                    "flex flex-col overflow-hidden rounded-md border text-left transition-colors",
-                    avatarId === a.id ? "border-accent ring-1 ring-accent" : "border-line-subtle hover:border-line-default",
-                  ].join(" ")}
-                >
-                  <div className="relative aspect-[9/16] w-full overflow-hidden bg-surface-inverse">
-                    {/* AvatarRow only carries a storage key (thumb_key), not a presigned URL —
-                        no endpoint currently presigns arbitrary avatar thumbnails, so this shows
-                        a placeholder icon instead of an image. */}
-                    <div className="flex h-full items-center justify-center text-white/40">
-                      <Clapperboard size={20} strokeWidth={1.5} />
-                    </div>
-                  </div>
-                  <div className="p-2.5">
-                    <span className="text-sm font-medium tracking-tight text-fg-primary">{a.name}</span>
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
+            <a
+              href={consentUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-2 inline-block font-medium text-accent underline underline-offset-2"
+            >
+              Open consent page →
+            </a>
+          </div>
         </div>
       )}
 
@@ -131,10 +106,6 @@ export default function VideoStage({
 
 function jobLabel(type: Job["type"]): string {
   switch (type) {
-    case "voice_gen":
-      return "Generating voice";
-    case "voice_swap":
-      return "Swapping voice";
     case "video_gen":
       return "Generating avatar video";
     case "transcribe":
