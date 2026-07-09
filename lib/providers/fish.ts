@@ -39,6 +39,7 @@ export async function cloneVoice(audioUrl: string, name: string, viewerId: strin
 
   const form = new FormData()
   form.append('type', 'tts')
+  form.append('train_mode', 'fast')
   form.append('title', name)
   form.append('visibility', 'private')
   form.append('voices', new Blob([sampleBuffer], { type: sampleType }), sampleName)
@@ -72,6 +73,7 @@ export async function cloneVoiceFromBuffer(
   }
   const form = new FormData()
   form.append('type', 'tts')
+  form.append('train_mode', 'fast')
   form.append('title', name)
   form.append('visibility', 'private')
   form.append('voices', new Blob([new Uint8Array(buffer)], { type: 'audio/wav' }), 'sample.wav')

@@ -22,6 +22,9 @@ vi.mock('../../../lib/db', () => {
   }
 })
 
+const tickMock = vi.fn(async () => ({ advanced: 0, checked: 0 }))
+vi.mock('../../../lib/jobs', () => ({ tick: (...args: unknown[]) => tickMock(...(args as [])) }))
+
 import { GET } from './route'
 
 interface DbTestModule {
@@ -54,5 +57,19 @@ describe('GET /api/avatars', () => {
     const res = await GET(makeRequest())
     const body = (await res.json()) as { avatars: Array<{ id: string }> }
     expect(body.avatars.map((a) => a.id)).toEqual(['a2'])
+  })
+
+  it('opportunistically ticks the viewer\'s jobs before listing, so a stuck job self-heals on poll', async () => {
+    await GET(makeRequest())
+    expect(tickMock).toHaveBeenCalledWith({ viewerId: VIEWER, token: expect.any(String) })
+  })
+
+  it('still returns avatars if the opportunistic tick throws', async () => {
+    tickMock.mockRejectedValueOnce(new Error('heygen down'))
+    db.__seed('avatars', { id: 'a1', viewer_id: VIEWER, name: 'Current', status: 'training' })
+    const res = await GET(makeRequest())
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { avatars: Array<{ id: string }> }
+    expect(body.avatars.map((a) => a.id)).toEqual(['a1'])
   })
 })
