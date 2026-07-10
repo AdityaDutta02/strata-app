@@ -48,7 +48,8 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   const buffer = Buffer.from(await file.arrayBuffer());
   const contentType = file.type || "audio/wav";
-  const sampleKey = `dev/voice-train/${Date.now()}-${file.name}`;
+  const safeName = file.name.replace(/[^A-Za-z0-9._-]/g, "_").replace(/^\.+/, "") || "sample";
+  const sampleKey = `dev/voice-train/${Date.now()}-${safeName}`;
 
   let job = await dbInsert<DevJobRow>(
     "jobs",
