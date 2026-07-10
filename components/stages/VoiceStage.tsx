@@ -91,8 +91,11 @@ export default function VoiceStage({
             )}
           </div>
         </div>
+        {generateError && <p className="text-sm text-error" role="alert">{generateError}</p>}
         <div className="flex justify-end gap-2">
-          <Button variant="subtle" onClick={onGenerateVoice}>Regenerate</Button>
+          <Button variant="subtle" onClick={onGenerateVoice} disabled={generating}>
+            {generating ? "Regenerating…" : "Regenerate"}
+          </Button>
           <Button variant="primary" icon={ArrowRight} onClick={onContinue}>
             Approve &amp; Continue to Video
           </Button>

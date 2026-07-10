@@ -301,9 +301,19 @@ function WorkspaceInner({
   }
 
   async function handleGenerateVoice(): Promise<void> {
-    if (!estimate) return;
-    if (voiceMode === "tts" && !voiceId) return;
-    if (voiceMode === "swap" && !recordingKey) return;
+    setVoiceGenerateError(null);
+    if (!estimate) {
+      setVoiceGenerateError("Still calculating cost — try again in a moment.");
+      return;
+    }
+    if (voiceMode === "tts" && !voiceId) {
+      setVoiceGenerateError("Pick a voice before generating.");
+      return;
+    }
+    if (voiceMode === "swap" && !recordingKey) {
+      setVoiceGenerateError("Upload a recording before generating.");
+      return;
+    }
     const voiceRate = voiceMode === "swap" ? 4 : 1;
     const voiceCost = estimate.minutes * voiceRate;
     if (!requestSpend(voiceCost, "Generate voice")) return;
