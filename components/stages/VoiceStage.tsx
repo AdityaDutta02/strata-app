@@ -17,6 +17,7 @@ interface VoiceStageProps {
   onChangeMode: (mode: VoiceMode) => void;
   onUploadRecording: (file: File) => void;
   voiceJob: Job | null;
+  audioUrl: string | null;
   generating: boolean;
   generateError?: string | null;
   onGenerateVoice: () => void;
@@ -42,6 +43,7 @@ export default function VoiceStage({
   onChangeMode,
   onUploadRecording,
   voiceJob,
+  audioUrl,
   generating,
   generateError,
   onGenerateVoice,
@@ -79,9 +81,14 @@ export default function VoiceStage({
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-sm bg-success/10 text-success">
             <Mic2 size={18} strokeWidth={2} />
           </div>
-          <div>
+          <div className="min-w-0 flex-1">
             <h3 className="text-base font-semibold tracking-tight text-fg-primary">Voiceover generated</h3>
             <p className="mt-0.5 text-sm text-fg-secondary">Not right? Regenerate before approving.</p>
+            {audioUrl ? (
+              <audio controls src={audioUrl} className="mt-3 h-9 w-full max-w-sm" />
+            ) : (
+              <p className="mt-3 text-xs text-fg-secondary">Loading playback…</p>
+            )}
           </div>
         </div>
         <div className="flex justify-end gap-2">

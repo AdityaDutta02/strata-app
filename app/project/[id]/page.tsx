@@ -231,6 +231,28 @@ function WorkspaceInner({
     jobs
       .filter((j) => j.type === "voice_gen" || j.type === "voice_swap")
       .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0] ?? null;
+  const audioAssetId = voiceJob?.status === "ready" ? (voiceJob.output_json.audioAssetId as string | undefined) : undefined;
+
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!audioAssetId) {
+      setAudioUrl(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const { url } = await api.assets.url(token, audioAssetId);
+        if (!cancelled) setAudioUrl(url);
+      } catch {
+        if (!cancelled) setAudioUrl(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [token, audioAssetId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -446,6 +468,7 @@ function WorkspaceInner({
               onChangeMode={setVoiceMode}
               onUploadRecording={(f) => void handleUploadRecording(f)}
               voiceJob={voiceJob}
+              audioUrl={audioUrl}
               generating={voiceGenerating}
               generateError={voiceGenerateError}
               onGenerateVoice={() => void handleGenerateVoice()}
