@@ -91,6 +91,12 @@ async function runVoiceJob(job: JobRow, project: ProjectRow, viewer: Viewer): Pr
   await dbUpdate<JobRow>('jobs', job.id, { status: 'processing' }, token)
   try {
     let audioBuffer: Buffer
+    // Content-type must match what each provider actually returns — Fish Audio's /v1/tts is
+    // requested with format:'mp3' (see fish.ts), while Kits.ai's outputFileUrl is its lossless
+    // (WAV) render. A mislabeled content-type serves the browser bytes it can't parse the
+    // header of, so <audio> can't determine duration even though the file itself is fine.
+    let contentType: string
+    let filename: string
     if (job.type === 'voice_swap') {
       const recordingKey = job.input_json.recordingKey as string | null
       if (!recordingKey) throw new JobValidationError('Missing recordingKey for voice swap')
@@ -100,12 +106,16 @@ async function runVoiceJob(job: JobRow, project: ProjectRow, viewer: Viewer): Pr
       }
       const { url: recordingUrl } = await getPresignedDownloadUrl(recordingKey, token)
       audioBuffer = await kits.convert(recordingUrl, voice?.kits_voice_id ?? 'mock', viewerId, token)
+      contentType = 'audio/wav'
+      filename = 'voice.wav'
     } else {
       const voice = project.voice_id ? await dbGet<VoiceRow>('voices', project.voice_id, token) : null
       if (!isMockMode(token) && !voice?.fish_voice_id) {
         throw new JobValidationError('Selected voice has no Fish Audio clone trained')
       }
       audioBuffer = await fish.tts(project.script, voice?.fish_voice_id ?? 'mock', viewerId, token)
+      contentType = 'audio/mpeg'
+      filename = 'voice.mp3'
     }
     const audioAsset = await storeAsset({
       viewerId,
@@ -113,8 +123,8 @@ async function runVoiceJob(job: JobRow, project: ProjectRow, viewer: Viewer): Pr
       jobId: job.id,
       kind: 'audio',
       buffer: audioBuffer,
-      contentType: 'audio/wav',
-      filename: 'voice.wav',
+      contentType,
+      filename,
       token,
     })
     await markJobReady(job, { audioAssetId: audioAsset.id }, token)

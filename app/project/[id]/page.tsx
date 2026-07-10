@@ -232,6 +232,19 @@ function WorkspaceInner({
       .filter((j) => j.type === "voice_gen" || j.type === "voice_swap")
       .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0] ?? null;
   const audioAssetId = voiceJob?.status === "ready" ? (voiceJob.output_json.audioAssetId as string | undefined) : undefined;
+  const videoJob =
+    jobs
+      .filter((j) => j.type === "video_gen")
+      .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0] ?? null;
+  // project.status stays "processing" for the entire voice-approval waiting period (it only
+  // flips once the video job starts, then again once the whole chain reaches "ready") — driving
+  // the preview spinner off it made the spinner look "stuck" while the user was just reviewing
+  // an already-finished voiceover. Derive it from the actual in-flight job instead.
+  const previewProcessing =
+    voiceJob?.status === "queued" ||
+    voiceJob?.status === "processing" ||
+    videoJob?.status === "queued" ||
+    videoJob?.status === "processing";
 
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
 
@@ -507,7 +520,7 @@ function WorkspaceInner({
         {/* Preview */}
         <VideoPreview
           tint={tint}
-          processing={project.status === "processing"}
+          processing={previewProcessing}
           failed={project.status === "failed"}
           ready={project.status === "ready"}
           videoUrl={videoUrl}
