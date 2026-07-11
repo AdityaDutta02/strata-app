@@ -1,9 +1,14 @@
 'use client'
 import { useState, useEffect, useRef } from 'react'
+import { useRouter } from 'next/navigation'
 
 const PLATFORM_URL = process.env.NEXT_PUBLIC_TERMINAL_AI_PLATFORM_URL ?? 'https://terminalai.studioionique.com'
 const SILENT_REFRESH_MS = 12 * 60 * 1000 // token expires at 15m; refresh at 12m
 const OAUTH_STATE_KEY = 'tai_oauth_state'
+// Where to bounce back to after the platform redirects us to redirect_uri (always the app's
+// root — the platform validates redirect_uri against a registered allowlist, so a path-specific
+// value gets rejected and re-triggers the whole redirect, causing an infinite reload loop).
+const RETURN_PATH_KEY = 'tai_return_path'
 
 function genState(): string {
   const buf = new Uint8Array(16)
@@ -34,9 +39,7 @@ function redirectToAuthorize(appId: string, mode: 'redirect' | 'silent'): string
   sessionStorage.setItem(OAUTH_STATE_KEY, state)
   const url = new URL('/embed/authorize', PLATFORM_URL)
   url.searchParams.set('app_id', appId)
-  // Preserve the path the viewer actually landed on (e.g. /dev/1-voice-train) — hardcoding
-  // '/' here silently bounced every standalone deep link back to the homepage after auth.
-  url.searchParams.set('redirect_uri', window.location.origin + window.location.pathname + window.location.search)
+  url.searchParams.set('redirect_uri', window.location.origin + '/')
   url.searchParams.set('state', state)
   url.searchParams.set('mode', mode)
   return url.toString()
@@ -55,6 +58,7 @@ function redirectToAuthorize(appId: string, mode: 'redirect' | 'silent'): string
 export function useEmbedToken(): string | null {
   const [token, setToken] = useState<string | null>(null)
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const router = useRouter()
 
   useEffect(() => {
     // 1. A token in the URL fragment means we just came back from /embed/authorize (standalone) —
@@ -62,6 +66,13 @@ export function useEmbedToken(): string | null {
     const fragmentToken = readTokenFromFragment()
     if (fragmentToken) {
       setToken(fragmentToken)
+      // We always land back at '/' (redirect_uri is fixed) — hop to wherever the viewer
+      // actually started from, e.g. /dev/1-voice-train, if we stashed one before leaving.
+      const returnPath = sessionStorage.getItem(RETURN_PATH_KEY)
+      sessionStorage.removeItem(RETURN_PATH_KEY)
+      if (returnPath && returnPath !== window.location.pathname + window.location.search) {
+        router.replace(returnPath)
+      }
       return
     }
 
@@ -70,6 +81,8 @@ export function useEmbedToken(): string | null {
 
     if (isStandalone) {
       if (!appId) return // scaffolded app must set NEXT_PUBLIC_TERMINAL_AI_APP_ID for standalone mode
+      const currentPath = window.location.pathname + window.location.search
+      if (currentPath !== '/') sessionStorage.setItem(RETURN_PATH_KEY, currentPath)
       window.location.href = redirectToAuthorize(appId, 'redirect')
       return
     }
