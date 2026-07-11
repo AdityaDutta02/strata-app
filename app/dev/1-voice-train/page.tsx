@@ -80,6 +80,13 @@ export default function VoiceTrainDevPage() {
         <button onClick={() => void run()} disabled={running || !file || !title.trim()}>
           {running ? "Training…" : "Run"}
         </button>
+        {!running && (!file || !title.trim()) && (
+          <p style={{ color: "#c60", margin: 0 }}>
+            Run is disabled until both a title and a file are set.
+            {!title.trim() && " Missing: title."} {!file && " Missing: file."}
+          </p>
+        )}
+        {running && <p style={{ color: "#08c", margin: 0 }}>Calling Fish Audio POST /model — this can take a few seconds…</p>}
       </div>
 
       {result != null && (
