@@ -34,7 +34,9 @@ function redirectToAuthorize(appId: string, mode: 'redirect' | 'silent'): string
   sessionStorage.setItem(OAUTH_STATE_KEY, state)
   const url = new URL('/embed/authorize', PLATFORM_URL)
   url.searchParams.set('app_id', appId)
-  url.searchParams.set('redirect_uri', window.location.origin + '/')
+  // Preserve the path the viewer actually landed on (e.g. /dev/1-voice-train) — hardcoding
+  // '/' here silently bounced every standalone deep link back to the homepage after auth.
+  url.searchParams.set('redirect_uri', window.location.origin + window.location.pathname + window.location.search)
   url.searchParams.set('state', state)
   url.searchParams.set('mode', mode)
   return url.toString()
