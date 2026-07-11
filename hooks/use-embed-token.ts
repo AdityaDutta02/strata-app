@@ -10,6 +10,12 @@ const OAUTH_STATE_KEY = 'tai_oauth_state'
 // value gets rejected and re-triggers the whole redirect, causing an infinite reload loop).
 const RETURN_PATH_KEY = 'tai_return_path'
 
+// Must be a same-origin, single-leading-slash path — rejects `//evil.com` / `/\evil.com`,
+// which some routers/browsers treat as protocol-relative and would open-redirect off-origin.
+function isSafeReturnPath(path: string): boolean {
+  return /^\/(?![\/\\])/.test(path)
+}
+
 function genState(): string {
   const buf = new Uint8Array(16)
   crypto.getRandomValues(buf)
@@ -70,7 +76,7 @@ export function useEmbedToken(): string | null {
       // actually started from, e.g. /dev/1-voice-train, if we stashed one before leaving.
       const returnPath = sessionStorage.getItem(RETURN_PATH_KEY)
       sessionStorage.removeItem(RETURN_PATH_KEY)
-      if (returnPath && returnPath !== window.location.pathname + window.location.search) {
+      if (returnPath && isSafeReturnPath(returnPath) && returnPath !== window.location.pathname + window.location.search) {
         router.replace(returnPath)
       }
       return
@@ -82,7 +88,7 @@ export function useEmbedToken(): string | null {
     if (isStandalone) {
       if (!appId) return // scaffolded app must set NEXT_PUBLIC_TERMINAL_AI_APP_ID for standalone mode
       const currentPath = window.location.pathname + window.location.search
-      if (currentPath !== '/') sessionStorage.setItem(RETURN_PATH_KEY, currentPath)
+      if (currentPath !== '/' && isSafeReturnPath(currentPath)) sessionStorage.setItem(RETURN_PATH_KEY, currentPath)
       window.location.href = redirectToAuthorize(appId, 'redirect')
       return
     }
